@@ -23,43 +23,11 @@ target_include_directories(minidfs PUBLIC
     ${EXTERNAL_INCLUDE_DIRS}
 )
 
-<<<<<<< HEAD
 
 # minidfs server cli/backend
-add_executable(minidfs_server "main.cpp")
+add_executable(minidfs_server "server.cpp")
 target_link_libraries(minidfs_server PRIVATE minidfs)
 
 include(setup_proto)
 include(setup_application)
 include(setup_tests)
-=======
-# minidfs server cli
-add_executable(minidfs_server "main.cpp")
-target_link_libraries(minidfs_server PRIVATE minidfs)
-
-=======
-# minidfs server cli
-add_executable(minidfs_server "main.cpp")
-target_link_libraries(minidfs_server PRIVATE minidfs)
-
->>>>>>> 03c9c8050fa61f455e7d187748cc9deb1b80e07c
-# gui client
-file(GLOB_RECURSE MINIDFS_CLIENT_SRCS 
-    "gui/application/*.cpp" 
-    "gui/application/*.mm" 
-    "gui/application/*.h" 
-)
-if(APPLE)
-    list(FILTER MINIDFS_CLIENT_SRCS EXCLUDE REGEX ".*/glad.cpp$")
-endif()
-add_executable(minidfs_client ${MINIDFS_CLIENT_SRCS})
-target_include_directories(minidfs_client PRIVATE
-    ${CMAKE_SOURCE_DIR}
-    ${IMGUI_INCLUDE_DIRS}
-    ${EXTERNAL_INCLUDE_DIRS}
-)
-target_link_libraries(minidfs_client PRIVATE 
-    minidfs
-    imgui
-    glfw
-)
