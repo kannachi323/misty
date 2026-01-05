@@ -22,7 +22,10 @@ grpc::ServerUnaryReactor* MiniDFSImpl::ListFiles(
         Reactor(MiniDFSImpl* service, const minidfs::ListFilesReq* req, minidfs::ListFilesRes* res) 
             : service_(service)
         {
+			std::cout << service_->mount_path_ << " " << req->path() << std::endl;
             fs::path dir_path = FileManager::ResolvePath(service_->mount_path_, req->path());
+			std::cout << "listing files for: " << dir_path.generic_string() << std::endl;
+            fflush(stdout);
             bool is_dir = fs::is_directory(dir_path);
             if (!fs::exists(dir_path)) {
                 Finish(grpc::Status(grpc::StatusCode::NOT_FOUND, "Directory not found"));
@@ -35,9 +38,9 @@ grpc::ServerUnaryReactor* MiniDFSImpl::ListFiles(
 
             for (const auto& entry : fs::directory_iterator(dir_path)) {
                 minidfs::FileInfo* file_info = res->add_files();
-                file_info->set_file_path(entry.path().string());
+                file_info->set_file_path(entry.path().generic_string());
                 file_info->set_is_dir(is_dir);
-                file_info->set_hash(FileManager::GetFileHash(entry.path().string()));
+                file_info->set_hash(FileManager::GetFileHash(entry.path().generic_string()));
             }
             Finish(grpc::Status::OK);
         }
@@ -66,11 +69,11 @@ grpc::ServerUnaryReactor* MiniDFSImpl::GetFileLock(
             client_id_ = req->client_id();
             
             if (req->op() == minidfs::FileOpType::READ) {
-                ok = service_->file_manager_->AcquireReadLock(client_id_, file_path_.string());
+                ok = service_->file_manager_->AcquireReadLock(client_id_, file_path_.generic_string());
             } else if (req->op() == minidfs::FileOpType::WRITE) {
-                ok = service_->file_manager_->AcquireWriteLock(client_id_, file_path_.string(), true);
+                ok = service_->file_manager_->AcquireWriteLock(client_id_, file_path_.generic_string(), true);
             } else if (req->op() == minidfs::FileOpType::DEL) {
-				ok = service_->file_manager_->AcquireWriteLock(client_id_, file_path_.string(), false);
+				ok = service_->file_manager_->AcquireWriteLock(client_id_, file_path_.generic_string(), false);
             }
             
             if (ok) {
@@ -111,7 +114,7 @@ grpc::ServerUnaryReactor* MiniDFSImpl::RemoveFile(
             std::error_code ec;
             file_path_ = FileManager::ResolvePath(service_->mount_path_, req_->file_path());
 
-            FileStatus status = service_->file_manager_->RemoveFile(req->client_id(), file_path_.string());
+            FileStatus status = service_->file_manager_->RemoveFile(req->client_id(), file_path_.generic_string());
 
             switch (status) {
                 case FileStatus::FILE_LOCKED:
@@ -140,9 +143,9 @@ grpc::ServerUnaryReactor* MiniDFSImpl::RemoveFile(
 
         void OnDone() override {
             service_->file_manager_->ReleaseWriteLock(
-                req_->client_id(), file_path_.string());
+                req_->client_id(), file_path_.generic_string());
             service_->pubsub_manager_->Publish(req_->client_id(),
-                file_path_.string(), minidfs::FileUpdateType::DELETED);
+                file_path_.generic_string(), minidfs::FileUpdateType::DELETED);
             delete this;
         }
 
@@ -172,9 +175,9 @@ grpc::ServerReadReactor<minidfs::FileBuffer>* MiniDFSImpl::StoreFile(
             if (!ok) {
                 response_->set_success(true);
                 response_->set_msg("File stored successfully");
-                service_->file_manager_->ReleaseWriteLock(client_id_, file_path_.string());
+                service_->file_manager_->ReleaseWriteLock(client_id_, file_path_.generic_string());
                 service_->IncrementVersion();
-                service_->pubsub_manager_->Publish(client_id_, file_path_.string(), minidfs::FileUpdateType::MODIFIED);
+                service_->pubsub_manager_->Publish(client_id_, file_path_.generic_string(), minidfs::FileUpdateType::MODIFIED);
                 
                 Finish(grpc::Status::OK);
                 return;
@@ -190,7 +193,7 @@ grpc::ServerReadReactor<minidfs::FileBuffer>* MiniDFSImpl::StoreFile(
             size_t data_size = current_.data().size();
 
             bool write_ok = service_->file_manager_->WriteFile(
-                current_.client_id(), file_path_.string(), 
+                current_.client_id(), file_path_.generic_string(), 
                 offset_, data, data_size);
             if (!write_ok) {
                 Finish(grpc::Status(grpc::StatusCode::DATA_LOSS, "Write failed"));
@@ -234,7 +237,7 @@ grpc::ServerWriteReactor<minidfs::FileBuffer>* MiniDFSImpl::FetchFile(
         void OnWriteDone(bool ok) override {
             if (!ok) {
                 if (!file_path_.empty()) {
-                    service_->file_manager_->ReleaseReadLock(client_id_, file_path_.string());
+                    service_->file_manager_->ReleaseReadLock(client_id_, file_path_.generic_string());
                 }
                 Finish(grpc::Status::OK);
                 return;
@@ -252,7 +255,7 @@ grpc::ServerWriteReactor<minidfs::FileBuffer>* MiniDFSImpl::FetchFile(
             size_t bytes_read = 0;
     
             bool read_success = service_->file_manager_->ReadFile(
-                client_id_, file_path_.string(), offset_, raw_buf.data(), &bytes_read
+                client_id_, file_path_.generic_string(), offset_, raw_buf.data(), &bytes_read
             );
 
             if (!read_success) {
@@ -262,7 +265,7 @@ grpc::ServerWriteReactor<minidfs::FileBuffer>* MiniDFSImpl::FetchFile(
 
             if (bytes_read > 0) {
                 if (offset_ == 0) {
-                    buffer_.set_file_path(file_path_.string());
+                    buffer_.set_file_path(file_path_.generic_string());
                 } else {
                     buffer_.clear_file_path();
                 }
