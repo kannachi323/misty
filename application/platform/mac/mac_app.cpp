@@ -1,38 +1,40 @@
-#ifdef _WIN32
+#ifdef __APPLE__
+#define GLFW_INCLUDE_NONE
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
-#include "windows_app.h"
+#include "mac_app.h"
+#include "asset_manager.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
 #include <cstdio>
 #include <iostream>
 
 namespace minidfs {
-
-    void WindowsApp::init_platform() {
+    void MacApp::init_platform() {
         init_glfw();
         init_window();
         init_opengl();
-        init_win32();
 		setup_window_icon();
-        setup_window_theme();
 		init_imgui();
     }
 
-    void WindowsApp::cleanup() {
+    void MacApp::cleanup() {
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
         glfwDestroyWindow(window_);
         glfwTerminate();
     }
-    void WindowsApp::init_glfw() {
+    void MacApp::init_glfw() {
         glfwSetErrorCallback(glfw_error_callback);
         if (!glfwInit()) throw std::runtime_error("Failed to initialize GLFW");
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+        glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
     }
 
-    void WindowsApp::init_window() {
+    void MacApp::init_window() {
         window_ = glfwCreateWindow(1280, 720, "MiniDFS Client", NULL, NULL);
         if (!window_) throw std::runtime_error("Failed to create GLFW window");
         glfwMakeContextCurrent(window_); //VERY IMPORTANT
@@ -40,7 +42,7 @@ namespace minidfs {
         glfwSetWindowSizeCallback(window_, glfw_window_size_callback);
     }
 
-    void WindowsApp::init_opengl() {
+    void MacApp::init_opengl() {
         if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
             throw std::runtime_error("Failed to initialize GLAD");
         }
@@ -48,18 +50,7 @@ namespace minidfs {
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     }
 
-    void WindowsApp::init_win32() {
-        hwnd_ = glfwGetWin32Window(window_);
-        wnd_proc_ = reinterpret_cast<WNDPROC>(
-            SetWindowLongPtr(
-                hwnd_,
-                GWLP_WNDPROC,
-                reinterpret_cast<LONG_PTR>(win32_window_proc)
-            )
-        );
-    }
-
-    void WindowsApp::setup_window_icon() {
+    void MacApp::setup_window_icon() {
         GLFWimage images[1]; 
         
         int channels;
@@ -71,23 +62,7 @@ namespace minidfs {
         }
     }
 
-    void WindowsApp::setup_window_theme() {
-        BOOL dark = TRUE;
-        DwmSetWindowAttribute(
-            hwnd_,
-            DWMWA_USE_IMMERSIVE_DARK_MODE,
-            &dark,
-            sizeof(dark)
-        );
-
-        COLORREF bg = RGB(34, 34, 34);
-        COLORREF text = RGB(255, 255, 255);
-
-        DwmSetWindowAttribute(hwnd_, DWMWA_CAPTION_COLOR, &bg, sizeof(bg));
-        DwmSetWindowAttribute(hwnd_, DWMWA_TEXT_COLOR, &text, sizeof(text));
-    }
-
-    void WindowsApp::init_imgui() {
+    void MacApp::init_imgui() {
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
 
@@ -103,7 +78,7 @@ namespace minidfs {
     }
 
 
-    void WindowsApp::configure_imgui_io() {
+    void MacApp::configure_imgui_io() {
         ImGuiIO& io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
@@ -118,7 +93,7 @@ namespace minidfs {
      
     }
 
-    void WindowsApp::configure_imgui_style() {
+    void MacApp::configure_imgui_style() {
         ImGui::StyleColorsDark();
         ImGuiStyle& style = ImGui::GetStyle();
         style.FrameRounding = 6.0f;
@@ -126,7 +101,7 @@ namespace minidfs {
         style.ScrollbarRounding = 6.0f;
 	}
 
-    void WindowsApp::prepare_frame() {
+    void MacApp::prepare_frame() {
         glfwPollEvents();
         int display_w, display_h;
         glfwGetFramebufferSize(window_, &display_w, &display_h);
@@ -136,7 +111,7 @@ namespace minidfs {
         ImGui::NewFrame();
     }
 
-    void WindowsApp::render_frame() {
+    void MacApp::render_frame() {
         ImGui::Render();
         
         int w, h;
@@ -161,42 +136,16 @@ namespace minidfs {
         glfwSwapBuffers(window_);
     }
 
-    bool WindowsApp::is_running() {
+    bool MacApp::is_running() {
         return !glfwWindowShouldClose(window_);
     }
 
-    LRESULT CALLBACK WindowsApp::win32_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-        switch (msg) {
-        case WM_NCHITTEST: {
-            LRESULT hit = CallWindowProc(wnd_proc_, hwnd, msg, wParam, lParam);
-
-            if (hit == HTCLIENT) {
-                const int border = 8;
-                POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-                RECT rc;
-
-                GetClientRect(hwnd, &rc);
-                ScreenToClient(hwnd, &pt);
-
-                if (pt.y < border) return HTTOP;
-                if (pt.y > rc.bottom - border) return HTBOTTOM;
-                if (pt.x < border) return HTLEFT;
-                if (pt.x > rc.right - border) return HTRIGHT;
-            }
-            return hit;
-        }
-        }
-
-        return CallWindowProc(wnd_proc_, hwnd, msg, wParam, lParam);
-    }
-
-    void WindowsApp::glfw_error_callback(int error, const char* description) {
+    void MacApp::glfw_error_callback(int error, const char* description) {
         fprintf(stderr, "GLFW Error %d: %s\n", error, description);
     }
 
-    void WindowsApp::glfw_window_size_callback(GLFWwindow* window, int width, int height) {
+    void MacApp::glfw_window_size_callback(GLFWwindow* window, int width, int height) {
 
     }
 }
-#endif 
-
+#endif
