@@ -1,4 +1,4 @@
-package ms
+package gd
 
 import (
 	"crypto/subtle"
@@ -12,24 +12,22 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/kannachi323/misty/proxy/core/ms"
+	"github.com/kannachi323/misty/proxy/core/gd"
 	"github.com/kannachi323/misty/proxy/core/utils"
 	"github.com/kannachi323/misty/proxy/db"
 )
 
-
-
 func GetOAuthLogin() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		config := ms.GetConfig()
+		config := gd.GetConfig()
 		if config == nil {
-			http.Error(w, "Failed to get MS config", http.StatusInternalServerError)
+			http.Error(w, "Google Drive config not found", http.StatusInternalServerError)
 			return
 		}
 
 		userID := r.URL.Query().Get("user_id")
 		if userID == "" {
-			http.Error(w, "user_id parameter is required", http.StatusBadRequest)
+			http.Error(w, "user_id is required", http.StatusBadRequest)
 			return
 		}
 
@@ -43,40 +41,45 @@ func GetOAuthLogin() http.HandlerFunc {
 		http.SetCookie(w, &http.Cookie{
 			Name:     utils.CSRFCookieName,
 			Value:    csrfToken,
-			Path:     "/api/ms/callback",
-			MaxAge:   600, // 10 minutes
+			Path:     "/api/gd/callback",
+			MaxAge:   300,
 			HttpOnly: true,
 			Secure:   r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
 			SameSite: http.SameSiteLaxMode,
 		})
 
-		state := ms.OAuthState{UserID: userID, CSRFToken: csrfToken}
+		state := gd.OAuthState{UserID: userID, CSRFToken: csrfToken}
 		stateJSON, _ := json.Marshal(state)
 		stateEncoded := base64.URLEncoding.EncodeToString(stateJSON)
 
 		params := url.Values{
-			"client_id":     {config.ClientID},
-			"redirect_uri":  {config.RedirectURI},
-			"response_type": {"code"},
-			"scope":         {config.GetScopesString()},
-			"prompt":        {"login"},
-			"state":         {stateEncoded},
+			"client_id":              {config.ClientID},
+			"redirect_uri":           {config.RedirectURI},
+			"response_type":          {"code"},
+			"scope":                  {config.GetScopesString()},
+			"prompt":                 {"consent"},
+			"state":                  {stateEncoded},
+			"access_type":            {"offline"},
+			"include_granted_scopes": {"true"},
 		}
 
-		authURL := fmt.Sprintf("https://login.microsoftonline.com/common/oauth2/v2.0/authorize?%s", params.Encode())
-		
+		log.Println(params.Get("client_id"))
+
+		authURL := fmt.Sprintf("https://accounts.google.com/o/oauth2/v2/auth?%s", params.Encode())
+
 		http.Redirect(w, r, authURL, http.StatusFound)
+		
 	}
 }
 
 func OAuthCallback(database *db.Database) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		config := ms.GetConfig()
+		config := gd.GetConfig()
 		code := r.URL.Query().Get("code")
 		stateParam := r.URL.Query().Get("state")
 
 		// Decode state parameter to get user_id and CSRF token
-		var state ms.OAuthState
+		var state gd.OAuthState
 		if stateParam != "" {
 			decoded, err := base64.URLEncoding.DecodeString(stateParam)
 			if err == nil {
@@ -86,7 +89,7 @@ func OAuthCallback(database *db.Database) http.HandlerFunc {
 
 		if code == "" || state.UserID == "" {
 			log.Printf("code or user_id is empty - code: %s, userID: %s", code, state.UserID)
-			ServeMSAuthHTML(w, false)
+			ServeGDAuthHTML(w, false)
 			return
 		}
 
@@ -94,14 +97,14 @@ func OAuthCallback(database *db.Database) http.HandlerFunc {
 		csrfCookie, err := r.Cookie(utils.CSRFCookieName)
 		if err != nil || csrfCookie.Value == "" {
 			log.Printf("CSRF cookie missing or empty")
-			ServeMSAuthHTML(w, false)
+			ServeGDAuthHTML(w, false)
 			return
 		}
 
 		// Constant-time comparison to prevent timing attacks
 		if subtle.ConstantTimeCompare([]byte(csrfCookie.Value), []byte(state.CSRFToken)) != 1 {
 			log.Printf("CSRF token mismatch")
-			ServeMSAuthHTML(w, false)
+			ServeGDAuthHTML(w, false)
 			return
 		}
 
@@ -109,34 +112,37 @@ func OAuthCallback(database *db.Database) http.HandlerFunc {
 		http.SetCookie(w, &http.Cookie{
 			Name:     utils.CSRFCookieName,
 			Value:    "",
-			Path:     "/api/ms/callback",
+			Path:     "/api/gd/callback",
 			MaxAge:   -1,
 			HttpOnly: true,
 		})
 
 		userID := state.UserID
-		tokenURL := fmt.Sprintf("https://login.microsoftonline.com/common/oauth2/v2.0/token")
+		tokenURL := "https://oauth2.googleapis.com/token"
 
 		resp, err := http.PostForm(tokenURL, url.Values{
 			"client_id":     {config.ClientID},
+			"client_secret": {config.ClientSecret},
 			"code":          {code},
 			"redirect_uri":  {config.RedirectURI},
 			"grant_type":    {"authorization_code"},
-			"scope":         {config.GetScopesString()},
 		})
 		if err != nil {
-			ServeMSAuthHTML(w, false)
+			log.Printf("Failed to exchange code for token: %v", err)
+			ServeGDAuthHTML(w, false)
 			return
 		}
 		defer resp.Body.Close()
 
 		var tokenResp map[string]interface{}
 		if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-			ServeMSAuthHTML(w, false)
+			log.Printf("Failed to decode token response: %v", err)
+			ServeGDAuthHTML(w, false)
 			return
 		}
 		if _, ok := tokenResp["error"]; ok {
-			ServeMSAuthHTML(w, false)
+			log.Printf("Token exchange error: %v", tokenResp["error"])
+			ServeGDAuthHTML(w, false)
 			return
 		}
 
@@ -148,31 +154,57 @@ func OAuthCallback(database *db.Database) http.HandlerFunc {
 			refreshToken = token
 		}
 
-		// Fetch Microsoft user profile and store tokens directly (no redirect with tokens in URL)
-		profile, err := FetchMSUserProfile(accessToken)
+		// Fetch Google user profile
+		profile, err := FetchGDUserProfile(accessToken)
 		if err != nil {
-			log.Printf("Failed to fetch MS user profile: %v", err)
-			ServeMSAuthHTML(w, false)
+			log.Printf("Failed to fetch GD user profile: %v", err)
+			ServeGDAuthHTML(w, false)
 			return
 		}
 
-		err = database.StoreMSUser(userID, profile.ID, accessToken, refreshToken, profile.DisplayName, profile.Email())
+		err = database.StoreGDUser(userID, profile.ID, accessToken, refreshToken, profile.Name, profile.Email)
 		if err != nil {
-			log.Printf("Failed to store MS token: %v", err)
-			ServeMSAuthHTML(w, false)
+			log.Printf("Failed to store GD token: %v", err)
+			ServeGDAuthHTML(w, false)
 			return
 		}
 
-		ServeMSAuthHTML(w, true)
+		ServeGDAuthHTML(w, true)
 	}
 }
 
 
-func ServeMSAuthHTML(w http.ResponseWriter, success bool) {
+func FetchGDUserProfile(accessToken string) (*gd.GoogleUserProfile, error) {
+	req, err := http.NewRequest("GET", "https://www.googleapis.com/oauth2/v2/userinfo", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch user profile: status %d", resp.StatusCode)
+	}
+
+	var profile gd.GoogleUserProfile
+	if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
+		return nil, err
+	}
+
+	return &profile, nil
+}
+
+func ServeGDAuthHTML(w http.ResponseWriter, success bool) {
 	// Read the redirect.html file
 	workDir, _ := os.Getwd()
 	staticDir := filepath.Join(workDir, "static")
-	htmlPath := filepath.Join(staticDir, "redirect.html")
+	htmlPath := filepath.Join(staticDir, "gdrive.html")
 
 	htmlContent, err := os.ReadFile(htmlPath)
 	if err != nil {
