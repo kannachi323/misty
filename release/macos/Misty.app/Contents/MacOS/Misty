@@ -1,0 +1,88 @@
+#!/bin/bash
+set -euo pipefail
+
+APP_DIR="$(cd "$(dirname "$0")" && pwd)"
+CONTENTS_DIR="$(cd "$APP_DIR/.." && pwd)"
+RESOURCES_DIR="$CONTENTS_DIR/Resources"
+LOG_DIR="${HOME}/Library/Logs/Misty"
+ENV_FILE="$APP_DIR/assets/misty.env"
+
+mkdir -p "$LOG_DIR"
+
+read_env_value() {
+    local key="$1"
+    local value=""
+
+    if [[ -f "$ENV_FILE" ]]; then
+        value="$(awk -F= -v key="$key" '$1 == key { sub(/^[[:space:]]+/, "", $2); print $2; exit }' "$ENV_FILE")"
+        value="${value%\"}"
+        value="${value#\"}"
+        value="${value%\'}"
+        value="${value#\'}"
+    fi
+
+    printf '%s\n' "$value"
+}
+
+port_from_url() {
+    local url="$1"
+    local port=""
+
+    port="${url##*:}"
+    port="${port%%/*}"
+    printf '%s\n' "$port"
+}
+
+is_port_listening() {
+    local port="$1"
+    [[ -n "$port" ]] || return 1
+    lsof -tiTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+}
+
+start_if_needed() {
+    local name="$1"
+    local command_path="$2"
+    local workdir="$3"
+    local port="$4"
+    shift 4
+
+    if [[ ! -x "$command_path" ]]; then
+        return 0
+    fi
+
+    if is_port_listening "$port"; then
+        return 0
+    fi
+
+    (
+        cd "$workdir"
+        nohup "$command_path" "$@" >>"$LOG_DIR/${name}.log" 2>&1 &
+    )
+}
+
+export MISTY_DISABLE_PROXY_AUTOSTART=1
+
+proxy_url="$(read_env_value "PROXY_SERVICE_URL")"
+proxy_port="$(port_from_url "$proxy_url")"
+start_if_needed "misty-proxy" "$APP_DIR/misty-proxy" "$APP_DIR" "$proxy_port"
+
+icloud_url="$(read_env_value "ICLOUD_PROXY_URL")"
+icloud_port="$(port_from_url "$icloud_url")"
+if [[ -x "$RESOURCES_DIR/proxy-icloud/proxy-icloud" ]]; then
+    export MISTY_ICLOUD_PROXY_PORT="$icloud_port"
+    start_if_needed \
+        "proxy-icloud" \
+        "$RESOURCES_DIR/proxy-icloud/proxy-icloud" \
+        "$RESOURCES_DIR/proxy-icloud" \
+        "$icloud_port"
+elif [[ -x "$APP_DIR/proxy-icloud/.venv/bin/python" && -f "$APP_DIR/proxy-icloud/main.py" ]]; then
+    export MISTY_ICLOUD_PROXY_PORT="$icloud_port"
+    start_if_needed \
+        "proxy-icloud" \
+        "$APP_DIR/proxy-icloud/.venv/bin/python" \
+        "$APP_DIR/proxy-icloud" \
+        "$icloud_port" \
+        "$APP_DIR/proxy-icloud/main.py"
+fi
+
+exec "$APP_DIR/misty-bin" "$@"
