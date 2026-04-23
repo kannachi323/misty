@@ -14,6 +14,100 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 MACOS_DIR="$APP/Contents/MacOS"
 RES_DIR="$APP/Contents/Resources"
 ASSETS_DIR="$RES_DIR/assets"
+FRAMEWORKS_DIR="$APP/Contents/Frameworks"
+INFO_PLIST="$APP/Contents/Info.plist"
+APP_ICON="$RES_DIR/AppIcon.icns"
+ICON_SOURCE="${MISTY_MACOS_ICON_SOURCE:-$ROOT/releases/macos/AppIcon-1024.png}"
+BUNDLE_ID="${MISTY_MACOS_BUNDLE_ID:-com.misty.app}"
+
+project_version() {
+    local version=""
+    if [[ -f "$ROOT/client/build/CMakeCache.txt" ]]; then
+        version="$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' "$ROOT/client/build/CMakeCache.txt" | head -n 1)"
+    fi
+    if [[ -z "$version" ]]; then
+        version="$(sed -n 's/^project([^)]*VERSION \\([^ )]*\\)).*/\\1/p' "$ROOT/client/CMakeLists.txt" | head -n 1)"
+    fi
+    printf '%s' "${version:-1.0}"
+}
+
+ensure_bundle_layout() {
+    local version
+    version="$(project_version)"
+
+    mkdir -p "$MACOS_DIR" "$RES_DIR" "$ASSETS_DIR" "$FRAMEWORKS_DIR"
+
+    if [[ ! -f "$INFO_PLIST" ]]; then
+        step "Generating Info.plist"
+        cat > "$INFO_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>Misty</string>
+    <key>CFBundleExecutable</key>
+    <string>Misty</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIdentifier</key>
+    <string>$BUNDLE_ID</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Misty</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>$version</string>
+    <key>CFBundleVersion</key>
+    <string>$version</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>
+EOF
+    fi
+
+    if [[ ! -f "$APP_ICON" ]]; then
+        local clean_iconset
+        step "Generating AppIcon.icns"
+        require_command iconutil
+        require_command sips
+
+        if [[ ! -f "$ICON_SOURCE" ]]; then
+            echo "error: icon source missing: $ICON_SOURCE" >&2
+            echo "Provide a 1024x1024 PNG at that path or set MISTY_MACOS_ICON_SOURCE." >&2
+            exit 1
+        fi
+
+        clean_iconset="$(mktemp -d "${TMPDIR:-/tmp}/misty-icon.XXXXXX.iconset")"
+        cp "$ICON_SOURCE" "$clean_iconset/icon_512x512@2x.png"
+        sips -z 16 16 "$ICON_SOURCE" --out "$clean_iconset/icon_16x16.png" >/dev/null
+        sips -z 32 32 "$ICON_SOURCE" --out "$clean_iconset/icon_16x16@2x.png" >/dev/null
+        sips -z 32 32 "$ICON_SOURCE" --out "$clean_iconset/icon_32x32.png" >/dev/null
+        sips -z 64 64 "$ICON_SOURCE" --out "$clean_iconset/icon_32x32@2x.png" >/dev/null
+        sips -z 128 128 "$ICON_SOURCE" --out "$clean_iconset/icon_128x128.png" >/dev/null
+        sips -z 256 256 "$ICON_SOURCE" --out "$clean_iconset/icon_128x128@2x.png" >/dev/null
+        sips -z 256 256 "$ICON_SOURCE" --out "$clean_iconset/icon_256x256.png" >/dev/null
+        sips -z 512 512 "$ICON_SOURCE" --out "$clean_iconset/icon_256x256@2x.png" >/dev/null
+        sips -z 512 512 "$ICON_SOURCE" --out "$clean_iconset/icon_512x512.png" >/dev/null
+
+        iconutil -c icns "$clean_iconset" -o "$APP_ICON"
+        rm -rf "$clean_iconset"
+    fi
+
+    if [[ ! -f "$ASSETS_DIR/misty.env" ]]; then
+        step "Generating default bundled misty.env"
+        cat > "$ASSETS_DIR/misty.env" <<EOF
+PROXY_SERVICE_URL=http://127.0.0.1:3000
+EOF
+    fi
+}
 
 if [[ ! -f "$ROOT/client/build/CMakeCache.txt" ]]; then
     step "Configuring client build directory"
@@ -41,14 +135,11 @@ LAUNCHER_OUT="$RELEASE_DIR/launcher.bin"
 [[ -f "$LAUNCHER_SRC" ]] || { echo "error: $LAUNCHER_SRC missing" >&2; exit 1; }
 cc -O2 -Wall -Wextra -mmacosx-version-min=12.0 -o "$LAUNCHER_OUT" "$LAUNCHER_SRC"
 
-if [[ ! -d "$APP" ]]; then
-    echo "error: $APP does not exist." >&2
-    echo "The .app template (Info.plist, launcher, AppIcon) must be in place." >&2
-    exit 1
-fi
+ensure_bundle_layout
+
 for required in \
-    "$APP/Contents/Info.plist" \
-    "$RES_DIR/AppIcon.icns" \
+    "$INFO_PLIST" \
+    "$APP_ICON" \
     "$ASSETS_DIR/misty.env" \
     "$ROOT/client/misty.conf"
 do
@@ -63,7 +154,6 @@ rm -f "$MACOS_DIR/misty-pwd-helper" "$MACOS_DIR/restic"
 
 require_command dylibbundler
 
-FRAMEWORKS_DIR="$APP/Contents/Frameworks"
 step "Bundling Homebrew dylibs into Contents/Frameworks"
 dylibbundler -od -of -cd -b \
     -x "$MACOS_DIR/misty-bin" \

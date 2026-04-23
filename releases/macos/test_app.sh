@@ -10,7 +10,10 @@ WAIT="${1:-6}"
 
 [[ -d "$APP" ]] || { echo "error: $APP missing. Run build_app.sh first." >&2; exit 1; }
 
-baseline_pids() { pgrep -x "$1" 2>/dev/null | sort -u; }
+baseline_pids() {
+    # pgrep returns 1 when no matching process exists; that's expected here.
+    pgrep -x "$1" 2>/dev/null | sort -u || true
+}
 new_pids() {
     local name="$1" before="$2"
     comm -13 <(printf '%s\n' "$before") <(baseline_pids "$name")

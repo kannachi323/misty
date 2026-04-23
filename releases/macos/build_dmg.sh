@@ -10,8 +10,9 @@ BUILD_DIR="$RELEASE_DIR/build/dmg"
 STAGE_DIR="$BUILD_DIR/stage"
 
 load_signing_env
+prepare_signing_keychain_if_needed
 
-: "${DEVELOPER_ID:?DEVELOPER_ID must be set in releases/macos/.env}"
+: "${MACOS_DEVELOPER_ID:?MACOS_DEVELOPER_ID must be set in releases/macos/.env}"
 
 [[ -d "$APP" ]] || { echo "error: $APP missing. Run build_app.sh first." >&2; exit 1; }
 require_command create-dmg
@@ -46,8 +47,8 @@ create-dmg \
     "$UNSIGNED_DMG" \
     "$STAGE_DIR"
 
-step "Signing DMG with $DEVELOPER_ID"
-codesign --force --timestamp --sign "$DEVELOPER_ID" "$UNSIGNED_DMG"
+step "Signing DMG with $MACOS_DEVELOPER_ID"
+codesign_with_identity "$UNSIGNED_DMG" --force --timestamp
 
 mkdir -p "$(dirname "$DMG_OUT")"
 mv "$UNSIGNED_DMG" "$DMG_OUT"

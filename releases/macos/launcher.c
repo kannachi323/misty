@@ -7,9 +7,10 @@
 //   1. Start misty-proxy in the background (detached, logs to
 //      ~/Library/Logs/Misty/misty-proxy.log). Skipped if the proxy port
 //      is already bound, so a manually-started proxy stays authoritative.
-//   2. chdir into Contents/Resources so misty-bin's relative asset
-//      lookups (assets/fonts/..., assets/logo/..., imgui.ini) resolve
-//      regardless of how the app was launched.
+//   2. chdir into a writable per-user runtime directory that symlinks the
+//      bundle's read-only resources (assets/, misty.conf) so relative asset
+//      lookups still work while imgui.ini and other mutable files stay out of
+//      the signed app bundle.
 //   3. exec misty-bin, passing argv through.
 //
 // Keep this file small and boring — it runs every time the app starts.
@@ -29,6 +30,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/param.h>
 #include <unistd.h>
 
 static int port_listening(int port) {
@@ -84,6 +86,22 @@ static int read_port_from_env(const char *path, const char *key) {
 static void ensure_dir(const char *path) {
     // mkdir returns -1/EEXIST if it already exists; we don't care.
     mkdir(path, 0755);
+}
+
+static void ensure_symlink(const char *target, const char *link_path) {
+    struct stat st;
+    if (lstat(link_path, &st) == 0) {
+        if (S_ISLNK(st.st_mode)) {
+            char existing_target[PATH_MAX];
+            ssize_t n = readlink(link_path, existing_target, sizeof(existing_target) - 1);
+            if (n >= 0) {
+                existing_target[n] = '\0';
+                if (strcmp(existing_target, target) == 0) return;
+            }
+        }
+        unlink(link_path);
+    }
+    symlink(target, link_path);
 }
 
 static void spawn_proxy(const char *macos_dir, const char *log_dir) {
@@ -153,13 +171,25 @@ int main(int argc, char **argv) {
     // Log dir = $HOME/Library/Logs/Misty (create if missing).
     const char *home = getenv("HOME");
     if (!home || !*home) home = "/tmp";
-    char library_dir[PATH_MAX], library_logs[PATH_MAX], log_dir[PATH_MAX];
+    char library_dir[PATH_MAX], library_logs[PATH_MAX], app_support_dir[PATH_MAX], runtime_dir[PATH_MAX], log_dir[PATH_MAX];
     snprintf(library_dir,  sizeof(library_dir),  "%s/Library",         home);
     snprintf(library_logs, sizeof(library_logs), "%s/Library/Logs",    home);
+    snprintf(app_support_dir, sizeof(app_support_dir), "%s/Library/Application Support", home);
+    snprintf(runtime_dir, sizeof(runtime_dir), "%s/Library/Application Support/Misty", home);
     snprintf(log_dir,      sizeof(log_dir),      "%s/Library/Logs/Misty", home);
     ensure_dir(library_dir);
     ensure_dir(library_logs);
+    ensure_dir(app_support_dir);
+    ensure_dir(runtime_dir);
     ensure_dir(log_dir);
+
+    char runtime_assets[PATH_MAX], runtime_conf[PATH_MAX], resources_assets[PATH_MAX], resources_conf[PATH_MAX];
+    snprintf(runtime_assets, sizeof(runtime_assets), "%s/assets", runtime_dir);
+    snprintf(runtime_conf, sizeof(runtime_conf), "%s/misty.conf", runtime_dir);
+    snprintf(resources_assets, sizeof(resources_assets), "%s/assets", resources_dir);
+    snprintf(resources_conf, sizeof(resources_conf), "%s/misty.conf", resources_dir);
+    ensure_symlink(resources_assets, runtime_assets);
+    ensure_symlink(resources_conf, runtime_conf);
 
     // Stop misty-bin from trying to auto-start its own proxy — that's our job.
     setenv("MISTY_DISABLE_PROXY_AUTOSTART", "1", 1);
@@ -169,10 +199,11 @@ int main(int argc, char **argv) {
         spawn_proxy(macos_dir, log_dir);
     }
 
-    // chdir so misty-bin's relative asset paths (assets/logo/..., imgui.ini)
-    // resolve against Contents/Resources/ regardless of launch context.
-    if (chdir(resources_dir) != 0) {
-        fprintf(stderr, "launcher: chdir(%s) failed: %s\n", resources_dir, strerror(errno));
+    // chdir into a writable runtime dir so relative reads still find the
+    // bundled assets while mutable files (e.g. imgui.ini) don't invalidate
+    // the app signature by landing inside Contents/Resources.
+    if (chdir(runtime_dir) != 0) {
+        fprintf(stderr, "launcher: chdir(%s) failed: %s\n", runtime_dir, strerror(errno));
     }
 
     char misty_bin[PATH_MAX];

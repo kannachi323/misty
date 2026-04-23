@@ -9,19 +9,29 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 ENTITLEMENTS="$RELEASE_DIR/Misty.entitlements"
 
 load_signing_env
+prepare_signing_keychain_if_needed
 
-if [[ -z "${DEVELOPER_ID:-}" ]]; then
-    echo "error: DEVELOPER_ID not set in signing config" >&2
+if [[ -z "${MACOS_DEVELOPER_ID:-}" ]]; then
+    echo "error: MACOS_DEVELOPER_ID not set in signing config" >&2
     exit 1
 fi
 
 [[ -d "$APP" ]] || { echo "error: $APP missing. Run build_app.sh first." >&2; exit 1; }
 [[ -f "$ENTITLEMENTS" ]] || { echo "error: $ENTITLEMENTS missing." >&2; exit 1; }
 
-if ! security find-identity -v -p codesigning | grep -qF "$DEVELOPER_ID"; then
+identity_args=(-v -p codesigning)
+if [[ -n "${MACOS_KEYCHAIN_PATH:-}" ]]; then
+    identity_args+=("$MACOS_KEYCHAIN_PATH")
+fi
+
+if ! security find-identity "${identity_args[@]}" | grep -qF "$MACOS_DEVELOPER_ID"; then
     echo "error: signing identity not found in keychain:" >&2
-    echo "  $DEVELOPER_ID" >&2
-    echo "Run: security find-identity -v -p codesigning" >&2
+    echo "  $MACOS_DEVELOPER_ID" >&2
+    if [[ -n "${MACOS_KEYCHAIN_PATH:-}" ]]; then
+        echo "Run: security find-identity -v -p codesigning \"$MACOS_KEYCHAIN_PATH\"" >&2
+    else
+        echo "Run: security find-identity -v -p codesigning" >&2
+    fi
     exit 1
 fi
 
@@ -29,7 +39,7 @@ step "Signing inner Mach-O binaries"
 while IFS= read -r -d '' f; do
     if file "$f" | grep -q "Mach-O"; then
         echo "  sign: ${f#$APP/}"
-        codesign --force --timestamp --options runtime --sign "$DEVELOPER_ID" "$f"
+        codesign_with_identity "$f" --force --timestamp --options runtime
     fi
 done < <(find "$APP" -type f -print0)
 
@@ -39,13 +49,12 @@ MAIN_EXEC="$APP/Contents/MacOS/$MAIN_EXEC_NAME"
 
 if ! file "$MAIN_EXEC" | grep -q "Mach-O"; then
     step "Signing main executable (script): $MAIN_EXEC_NAME"
-    codesign --force --timestamp --sign "$DEVELOPER_ID" "$MAIN_EXEC"
+    codesign_with_identity "$MAIN_EXEC" --force --timestamp
 fi
 
 step "Signing bundle"
-codesign --force --timestamp --options runtime \
-    --entitlements "$ENTITLEMENTS" \
-    --sign "$DEVELOPER_ID" "$APP"
+codesign_with_identity "$APP" --force --timestamp --options runtime \
+    --entitlements "$ENTITLEMENTS"
 
 step "Verifying signature"
 codesign --verify --deep --strict --verbose=2 "$APP"

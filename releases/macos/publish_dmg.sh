@@ -26,11 +26,17 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
+load_signing_env
+prepare_signing_keychain_if_needed
+
 "$PIPELINE_DIR/build_app.sh"
 "$PIPELINE_DIR/sign_app.sh"
 
 if [[ "$skip_test" -eq 0 ]]; then
     "$PIPELINE_DIR/test_app.sh"
+else
+    step "Skipping GUI smoke test"
+    codesign --verify --deep --strict --verbose=2 "$APP"
 fi
 
 "$PIPELINE_DIR/build_dmg.sh"
