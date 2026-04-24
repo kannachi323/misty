@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.mistysys.Misty</id>
+  <name>Misty</name>
+  <summary>Desktop file manager and cloud browser</summary>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="com.mistysys">
+    <name>Misty</name>
+  </developer>
+  <launchable type="desktop-id">misty.desktop</launchable>
+  <url type="homepage">https://mistysys.com</url>
+  <description>
+    <p>
+      Misty is a desktop file manager focused on browsing local files and cloud-backed
+      mounts from one place.
+    </p>
+    <p>
+      This AppImage is intended for early feedback and may contain known bugs.
+    </p>
+  </description>
+  <categories>
+    <category>Utility</category>
+    <category>FileTools</category>
+  </categories>
+</component>

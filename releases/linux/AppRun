@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APPDIR="${APPDIR:-$SELF_DIR}"
+BIN_DIR="$APPDIR/usr/bin"
+SHARE_DIR="$APPDIR/usr/share/misty"
+SEED_ENV="$SHARE_DIR/assets/misty.env"
+USER_ENV_DIR="${HOME}/misty"
+USER_ENV="${USER_ENV_DIR}/misty.env"
+PROXY_LOG_DIR="${USER_ENV_DIR}/.cache"
+PROXY_LOG="${PROXY_LOG_DIR}/proxy.log"
+
+read_proxy_url() {
+    local line value
+    if [[ -f "$USER_ENV" ]]; then
+        while IFS= read -r line; do
+            case "$line" in
+                PROXY_SERVICE_URL=*)
+                    value="${line#PROXY_SERVICE_URL=}"
+                    value="${value%\"}"
+                    value="${value#\"}"
+                    value="${value%\'}"
+                    value="${value#\'}"
+                    printf '%s\n' "$value"
+                    return 0
+                    ;;
+            esac
+        done < "$USER_ENV"
+    fi
+    printf '%s\n' "http://127.0.0.1:3000"
+}
+
+is_local_proxy_url() {
+    case "$1" in
+        http://127.0.0.1*|http://localhost*|http://0.0.0.0*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+probe_proxy() {
+    local proxy_url="${1%/}/api/hello"
+    if command -v curl >/dev/null 2>&1; then
+        curl --silent --show-error --fail --max-time 2 "$proxy_url" >/dev/null 2>&1
+        return $?
+    fi
+    if command -v wget >/dev/null 2>&1; then
+        wget -q -T 2 -O /dev/null "$proxy_url" >/dev/null 2>&1
+        return $?
+    fi
+    return 1
+}
+
+launch_proxy() {
+    mkdir -p "$PROXY_LOG_DIR"
+    if command -v nohup >/dev/null 2>&1; then
+        nohup "$BIN_DIR/misty-proxy" >>"$PROXY_LOG" 2>&1 &
+    else
+        "$BIN_DIR/misty-proxy" >>"$PROXY_LOG" 2>&1 &
+    fi
+}
+
+wait_for_proxy() {
+    local proxy_url="$1"
+    local attempt
+    for attempt in $(seq 1 40); do
+        if probe_proxy "$proxy_url"; then
+            return 0
+        fi
+        sleep 0.25
+    done
+    return 1
+}
+
+mkdir -p "$USER_ENV_DIR"
+if [[ -f "$SEED_ENV" && ! -f "$USER_ENV" ]]; then
+    install -m 0644 "$SEED_ENV" "$USER_ENV"
+fi
+
+export PATH="$BIN_DIR:${PATH:-}"
+export LD_LIBRARY_PATH="$APPDIR/usr/lib:$APPDIR/usr/lib64:${LD_LIBRARY_PATH:-}"
+export MISTY_PROXY_PRELAUNCHED=1
+
+"$BIN_DIR/misty-proxy" --bootstrap-only
+
+PROXY_URL="$(read_proxy_url)"
+if is_local_proxy_url "$PROXY_URL" && ! probe_proxy "$PROXY_URL"; then
+    launch_proxy
+    wait_for_proxy "$PROXY_URL" || true
+fi
+
+cd "$SHARE_DIR"
+exec "$BIN_DIR/misty" "$@"
