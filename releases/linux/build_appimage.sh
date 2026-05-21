@@ -46,9 +46,9 @@ render_icon() {
     fi
 }
 
-step "Building client binaries"
-cmake -S "$ROOT/client" -B "$ROOT/client/build"
-cmake --build "$ROOT/client/build" --target misty_assets -j"$(nproc)"
+step "Building app binaries"
+cmake -S "$ROOT" -B "$ROOT/build"
+cmake --build "$ROOT/build" --target misty_assets -j"$(nproc)"
 
 step "Building proxy binaries"
 mkdir -p "$ROOT/proxy/dist"
@@ -67,22 +67,20 @@ mkdir -p \
     "$APPDIR/usr/share/applications" \
     "$APPDIR/usr/share/metainfo" \
     "$APPDIR/usr/share/icons/hicolor/512x512/apps" \
-    "$APPDIR/usr/share/misty/assets" \
-    "$APPDIR/usr/bin/assets"
+    "$APPDIR/usr/share/misty/assets"
 
-install -m 0755 "$ROOT/client/build/bin/misty" "$APPDIR/usr/bin/misty"
-install -m 0755 "$ROOT/client/build/bin/misty-plugin-sandbox" "$APPDIR/usr/bin/misty-plugin-sandbox"
+install -m 0755 "$ROOT/build/bin/misty" "$APPDIR/usr/bin/misty"
+install -m 0755 "$ROOT/build/bin/misty-plugin-sandbox" "$APPDIR/usr/bin/misty-plugin-sandbox"
 install -m 0755 "$ROOT/proxy/dist/misty-proxy" "$APPDIR/usr/bin/misty-proxy"
 install -m 0755 "$ROOT/proxy/dist/misty-pwd-helper" "$APPDIR/usr/bin/misty-pwd-helper"
 
 rsync -a --delete --exclude '.DS_Store' \
-    "$ROOT/client/build/bin/assets/" "$APPDIR/usr/share/misty/assets/"
-install -m 0644 "$ROOT/client/misty.conf" "$APPDIR/usr/share/misty/misty.conf"
+    "$ROOT/assets/" "$APPDIR/usr/share/misty/assets/"
+install -m 0644 "$ROOT/misty.conf" "$APPDIR/usr/share/misty/misty.conf"
 install -m 0644 "$RELEASE_DIR/misty.env" "$APPDIR/usr/share/misty/assets/misty.env"
-install -m 0644 "$RELEASE_DIR/misty.env" "$APPDIR/usr/bin/assets/misty.env"
 
-if [[ -d "$ROOT/client/build/bin/plugins" ]]; then
-    rsync -a --delete "$ROOT/client/build/bin/plugins/" "$APPDIR/usr/bin/plugins/"
+if [[ -d "$ROOT/build/bin/plugins" ]]; then
+    rsync -a --delete "$ROOT/build/bin/plugins/" "$APPDIR/usr/bin/plugins/"
 fi
 
 install -m 0755 "$RELEASE_DIR/AppRun" "$APPDIR/AppRun"
@@ -91,7 +89,7 @@ install -m 0644 "$RELEASE_DIR/misty.desktop" "$APPDIR/usr/share/applications/mis
 install -m 0644 "$RELEASE_DIR/misty.appdata.xml" "$APPDIR/usr/share/metainfo/com.mistysys.Misty.appdata.xml"
 
 step "Generating AppImage icon"
-ICON_SRC="$ROOT/client/assets/logos/misty.png"
+ICON_SRC="$ROOT/assets/logos/misty.png"
 ICON_OUT="$APPDIR/misty.png"
 render_icon "$ICON_SRC" "$ICON_OUT"
 install -m 0644 "$ICON_OUT" "$APPDIR/usr/share/icons/hicolor/512x512/apps/misty.png"

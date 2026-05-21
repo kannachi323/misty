@@ -2,10 +2,9 @@
 #
 # Build and stage Misty.app for macOS.
 #
-# Re-runs the client + proxy builds, then copies fresh binaries and runtime
+# Re-runs the app + proxy builds, then copies fresh binaries and runtime
 # assets into releases/macos/Misty.app. Template files that live in the .app
-# are preserved — this script only replaces what comes from a build or from
-# client/assets.
+# are preserved; this script only replaces build outputs and bundled assets.
 
 set -euo pipefail
 
@@ -22,11 +21,11 @@ BUNDLE_ID="${MISTY_MACOS_BUNDLE_ID:-com.misty.app}"
 
 project_version() {
     local version=""
-    if [[ -f "$ROOT/client/build/CMakeCache.txt" ]]; then
-        version="$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' "$ROOT/client/build/CMakeCache.txt" | head -n 1)"
+    if [[ -f "$ROOT/build/CMakeCache.txt" ]]; then
+        version="$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' "$ROOT/build/CMakeCache.txt" | head -n 1)"
     fi
     if [[ -z "$version" ]]; then
-        version="$(sed -n 's/^project([^)]*VERSION \\([^ )]*\\)).*/\\1/p' "$ROOT/client/CMakeLists.txt" | head -n 1)"
+        version="$(sed -n 's/^project([^)]*VERSION \\([^ )]*\\)).*/\\1/p' "$ROOT/CMakeLists.txt" | head -n 1)"
     fi
     printf '%s' "${version:-1.0}"
 }
@@ -109,9 +108,9 @@ EOF
     fi
 }
 
-if [[ ! -f "$ROOT/client/build/CMakeCache.txt" ]]; then
-    step "Configuring client build directory"
-    cmake_args=(-S "$ROOT/client" -B "$ROOT/client/build" -DCMAKE_BUILD_TYPE=Release)
+if [[ ! -f "$ROOT/build/CMakeCache.txt" ]]; then
+    step "Configuring app build directory"
+    cmake_args=(-S "$ROOT" -B "$ROOT/build" -DCMAKE_BUILD_TYPE=Release)
     if [[ -n "${MISTY_CMAKE_GENERATOR:-}" ]]; then
         cmake_args+=(-G "$MISTY_CMAKE_GENERATOR")
     fi
@@ -123,8 +122,8 @@ if [[ ! -f "$ROOT/client/build/CMakeCache.txt" ]]; then
     cmake "${cmake_args[@]}"
 fi
 
-step "Building client (misty)"
-cmake --build "$ROOT/client/build" --target misty --config Release
+step "Building app (misty)"
+cmake --build "$ROOT/build" --target misty --config Release
 
 step "Building proxy (misty-proxy, release)"
 make -C "$ROOT/proxy" release
@@ -141,13 +140,13 @@ for required in \
     "$INFO_PLIST" \
     "$APP_ICON" \
     "$ASSETS_DIR/misty.env" \
-    "$ROOT/client/misty.conf"
+    "$ROOT/misty.conf"
 do
     [[ -e "$required" ]] || { echo "error: template file missing: $required" >&2; exit 1; }
 done
 
 step "Staging binaries"
-install -m 0755 "$ROOT/client/build/bin/misty" "$MACOS_DIR/misty-bin"
+install -m 0755 "$ROOT/build/bin/misty" "$MACOS_DIR/misty-bin"
 install -m 0755 "$ROOT/proxy/dist/misty-proxy" "$MACOS_DIR/misty-proxy"
 install -m 0755 "$LAUNCHER_OUT" "$MACOS_DIR/Misty"
 rm -f "$MACOS_DIR/misty-pwd-helper" "$MACOS_DIR/restic"
@@ -166,13 +165,13 @@ if otool -L "$MACOS_DIR/misty-bin" | grep -q "/opt/homebrew"; then
     exit 1
 fi
 
-step "Staging runtime assets from client/assets"
+step "Staging runtime assets from assets"
 mkdir -p "$ASSETS_DIR"
 rsync -a --delete \
     --exclude 'misty.env' \
     --exclude 'misty.conf' \
-    "$ROOT/client/assets/" "$ASSETS_DIR/"
-install -m 0644 "$ROOT/client/misty.conf" "$RES_DIR/misty.conf"
+    "$ROOT/assets/" "$ASSETS_DIR/"
+install -m 0644 "$ROOT/misty.conf" "$RES_DIR/misty.conf"
 rm -f "$ASSETS_DIR/misty.conf"
 
 if [[ -d "$RES_DIR/proxy-icloud" ]]; then
