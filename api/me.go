@@ -37,21 +37,26 @@ func GetMe(database *db.Database) http.HandlerFunc {
 			return
 		}
 
-		sub, err := database.GetSubscription(userID)
+		license, err := database.GetLicenseByUserID(userID)
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
+		if license == nil {
+			http.Error(w, "license not found", http.StatusInternalServerError)
+			return
+		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
-			"id":             user.ID,
-			"name":           user.Name,
-			"email":          user.Email,
-			"created_at":     user.CreatedAt,
-			"tier":           string(sub.Tier),
-			"status":         sub.Status,
-			"expires_at":     sub.ExpiresAt,
-			"license_device": sub.LicenseDevice,
+			"id":               user.ID,
+			"name":             user.Name,
+			"email":            user.Email,
+			"created_at":       user.CreatedAt,
+			"tier":             string(license.Tier),
+			"status":           license.Status,
+			"expires_at":       license.ExpiresAt,
+			"trial_started_at": license.TrialStartedAt,
+			"license_device":   license.LicenseDevice,
 		})
 	}
 }
