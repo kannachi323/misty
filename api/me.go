@@ -54,6 +54,7 @@ func GetMe(database *db.Database) http.HandlerFunc {
 			"created_at":       user.CreatedAt,
 			"tier":             string(license.Tier),
 			"status":           license.Status,
+			"allows_use":       licenseAllowsUse(license),
 			"expires_at":       license.ExpiresAt,
 			"trial_started_at": license.TrialStartedAt,
 			"license_device":   license.LicenseDevice,
