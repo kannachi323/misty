@@ -2,10 +2,28 @@
 
 This directory is the home for Misty's macOS release automation.
 
-The app icon source of truth is `releases/macos/AppIcon-1024.png`. The build
-generates the macOS `.icns` bundle icon from that single 1024x1024 PNG.
+The app icon source of truth is `assets/logos/misty.icns`. Set
+`MISTY_MACOS_ICON_SOURCE` to an `.icns` file or a 1024x1024 PNG to override it.
 
 ## Local flow
+
+To make a local `.app` from the prepared release payload:
+
+```sh
+./releases/macos/build_app.sh
+```
+
+By default, the app binary is staged from `build/release/misty`, falling back
+to `build/release/bin/misty` for the current CMake output layout. Assets are
+copied from `releases/misty/assets` into `Contents/MacOS/assets`, next to the
+binary, so the app can launch without a wrapper executable.
+
+Useful overrides:
+
+- `MISTY_MACOS_BINARY=/path/to/misty`
+- `MISTY_MACOS_ASSETS_DIR=/path/to/assets`
+
+For a signed and notarized DMG:
 
 1. Create `releases/macos/.env`.
 2. Fill in your Developer ID and notarization credentials.

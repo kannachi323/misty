@@ -19,8 +19,7 @@ new_pids() {
     comm -13 <(printf '%s\n' "$before") <(baseline_pids "$name")
 }
 
-BIN_BEFORE="$(baseline_pids misty-bin)"
-PROXY_BEFORE="$(baseline_pids misty-proxy)"
+BIN_BEFORE="$(baseline_pids misty)"
 
 CRASH_DIR="$HOME/Library/Logs/DiagnosticReports"
 mkdir -p "$CRASH_DIR"
@@ -33,26 +32,14 @@ open -n -F "$APP"
 step "Waiting ${WAIT}s for init"
 sleep "$WAIT"
 
-step "Checking misty-bin is alive"
-BIN_NEW="$(new_pids misty-bin "$BIN_BEFORE")"
+step "Checking misty is alive"
+BIN_NEW="$(new_pids misty "$BIN_BEFORE")"
 if [[ -z "$BIN_NEW" ]]; then
-    echo "error: no new misty-bin process — likely crashed during init." >&2
+    echo "error: no new misty process — likely crashed during init." >&2
     echo "Check ~/Library/Logs/DiagnosticReports/ for the crash report." >&2
     exit 1
 fi
-echo "OK: misty-bin pid(s) $BIN_NEW"
-
-step "Checking misty-proxy is alive"
-PROXY_NEW="$(new_pids misty-proxy "$PROXY_BEFORE")"
-if [[ -z "$PROXY_NEW" ]]; then
-    if [[ -n "$PROXY_BEFORE" ]]; then
-        echo "OK: pre-existing misty-proxy ($PROXY_BEFORE) still holding the port"
-    else
-        echo "warn: misty-proxy is not running. Check ~/Library/Logs/Misty/misty-proxy.log" >&2
-    fi
-else
-    echo "OK: misty-proxy pid(s) $PROXY_NEW"
-fi
+echo "OK: misty pid(s) $BIN_NEW"
 
 step "Checking for new crash reports"
 AFTER="$(mktemp)"
@@ -67,7 +54,7 @@ fi
 echo "OK: no new crash reports"
 
 step "Killing test instance"
-for pid in $BIN_NEW $PROXY_NEW; do
+for pid in $BIN_NEW; do
     kill "$pid" 2>/dev/null || true
 done
 sleep 1
