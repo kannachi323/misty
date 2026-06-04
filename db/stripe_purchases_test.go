@@ -45,4 +45,20 @@ func TestStripePurchaseUpsertAndLookup(t *testing.T) {
 	if byCharge.ID != byIntent.ID {
 		t.Fatalf("purchase IDs mismatch: %q vs %q", byCharge.ID, byIntent.ID)
 	}
+
+	hasProPurchase, err := database.HasCompletedStripePurchaseForTier(user.ID, TierPro)
+	if err != nil {
+		t.Fatalf("HasCompletedStripePurchaseForTier(pro) error = %v", err)
+	}
+	if !hasProPurchase {
+		t.Fatal("expected completed pro purchase to be detected")
+	}
+
+	hasPersonalPurchase, err := database.HasCompletedStripePurchaseForTier(user.ID, TierPersonal)
+	if err != nil {
+		t.Fatalf("HasCompletedStripePurchaseForTier(personal) error = %v", err)
+	}
+	if hasPersonalPurchase {
+		t.Fatal("unexpected completed personal purchase")
+	}
 }

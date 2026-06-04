@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	appbilling "github.com/kannachi323/misty/server/billing"
 	"github.com/kannachi323/misty/server/db"
 	"github.com/kannachi323/misty/server/security"
 )
@@ -47,7 +48,14 @@ func GetMe(database *db.Database) http.HandlerFunc {
 			return
 		}
 
+		proUpgradeDiscountEligible, err := appbilling.NewService(database).IsProUpgradeDiscountEligible(userID)
+		if err != nil && err != appbilling.ErrLicenseNotFound {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+
 		writeJSON(w, http.StatusOK, map[string]any{
+<<<<<<< Updated upstream
 			"id":               user.ID,
 			"name":             user.Name,
 			"email":            user.Email,
@@ -58,6 +66,18 @@ func GetMe(database *db.Database) http.HandlerFunc {
 			"expires_at":       license.ExpiresAt,
 			"trial_started_at": license.TrialStartedAt,
 			"license_device":   license.LicenseDevice,
+=======
+			"id":                            user.ID,
+			"name":                          user.Name,
+			"email":                         user.Email,
+			"created_at":                    user.CreatedAt,
+			"tier":                          string(license.Tier),
+			"status":                        license.Status,
+			"expires_at":                    license.ExpiresAt,
+			"trial_started_at":              license.TrialStartedAt,
+			"license_device":                license.LicenseDevice,
+			"pro_upgrade_discount_eligible": proUpgradeDiscountEligible,
+>>>>>>> Stashed changes
 		})
 	}
 }
@@ -117,6 +137,65 @@ func UpdateDevice(database *db.Database) http.HandlerFunc {
 		}
 
 		if err := database.UpdateLicenseDevice(userID, body.Device); err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
+func GetSettings(database *db.Database) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, err := sessionUserID(r, database)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if userID == "" {
+			http.Error(w, "not authenticated", http.StatusUnauthorized)
+			return
+		}
+
+		settings, err := database.GetUserSettingsByID(userID)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if settings == nil {
+			http.Error(w, "user not found", http.StatusNotFound)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"email_updates_enabled": settings.EmailUpdatesEnabled,
+		})
+	}
+}
+
+func UpdateSettings(database *db.Database) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, err := sessionUserID(r, database)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if userID == "" {
+			http.Error(w, "not authenticated", http.StatusUnauthorized)
+			return
+		}
+
+		var body struct {
+			EmailUpdatesEnabled bool `json:"email_updates_enabled"`
+		}
+		if err := decodeJSON(w, r, &body); err != nil {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+
+		if err := database.UpdateUserSettings(userID, db.UserSettings{
+			EmailUpdatesEnabled: body.EmailUpdatesEnabled,
+		}); err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}

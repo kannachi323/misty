@@ -96,6 +96,21 @@ func (db *Database) HasCompletedStripePurchase(userID string) (bool, error) {
 	return exists, nil
 }
 
+func (db *Database) HasCompletedStripePurchaseForTier(userID string, tier Tier) (bool, error) {
+	var exists bool
+
+	err := db.Conn.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM stripe_purchases WHERE user_id = $1 AND tier_purchased = $2 AND status = $3)`,
+		userID, tier, stripePurchaseStatusCompleted,
+	).Scan(&exists)
+	if err != nil {
+		log.Println("Failed to check Stripe purchase history for tier:", err)
+		return false, err
+	}
+
+	return exists, nil
+}
+
 func (db *Database) getStripePurchaseByColumn(column, value string) (*StripePurchase, error) {
 	if value == "" {
 		return nil, nil

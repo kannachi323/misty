@@ -9,6 +9,8 @@ import (
 	"github.com/kannachi323/misty/server/db"
 	"github.com/stripe/stripe-go/v82"
 	checkoutsession "github.com/stripe/stripe-go/v82/checkout/session"
+	couponapi "github.com/stripe/stripe-go/v82/coupon"
+	priceapi "github.com/stripe/stripe-go/v82/price"
 )
 
 const PersonalTrialDuration = 14 * 24 * time.Hour
@@ -27,11 +29,19 @@ type checkoutConfig struct {
 	prices     map[db.Tier]string
 }
 
-type CheckoutSessionCreator func(cfg checkoutConfig, user *db.User, tier db.Tier) (string, error)
+type checkoutSessionOptions struct {
+	discountCouponID string
+}
+
+type CheckoutSessionCreator func(cfg checkoutConfig, user *db.User, tier db.Tier, opts checkoutSessionOptions) (string, error)
+type StripePriceFetcher func(secretKey string, priceID string) (*stripe.Price, error)
+type StripeCouponCreator func(secretKey string, amountOff int64, currency string) (string, error)
 
 type Service struct {
 	database              *db.Database
 	createCheckoutSession CheckoutSessionCreator
+	fetchPrice            StripePriceFetcher
+	createCoupon          StripeCouponCreator
 	trialDuration         time.Duration
 }
 
@@ -41,6 +51,8 @@ func NewService(database *db.Database, opts ...ServiceOption) *Service {
 	service := &Service{
 		database:              database,
 		createCheckoutSession: createStripeCheckoutSession,
+		fetchPrice:            fetchStripePrice,
+		createCoupon:          createStripeCoupon,
 		trialDuration:         PersonalTrialDuration,
 	}
 	for _, opt := range opts {
@@ -53,6 +65,22 @@ func WithCheckoutSessionCreator(fn CheckoutSessionCreator) ServiceOption {
 	return func(service *Service) {
 		if fn != nil {
 			service.createCheckoutSession = fn
+		}
+	}
+}
+
+func WithStripePriceFetcher(fn StripePriceFetcher) ServiceOption {
+	return func(service *Service) {
+		if fn != nil {
+			service.fetchPrice = fn
+		}
+	}
+}
+
+func WithStripeCouponCreator(fn StripeCouponCreator) ServiceOption {
+	return func(service *Service) {
+		if fn != nil {
+			service.createCoupon = fn
 		}
 	}
 }
@@ -83,7 +111,39 @@ func (service *Service) CreateCheckoutSession(userID string, tier db.Tier) (stri
 		return "", err
 	}
 
-	return service.createCheckoutSession(config, user, tier)
+	opts := checkoutSessionOptions{}
+	if tier == db.TierPro {
+		eligible, err := service.IsProUpgradeDiscountEligible(userID)
+		if err != nil {
+			return "", err
+		}
+		if eligible {
+			couponID, err := service.createProUpgradeCoupon(config)
+			if err != nil {
+				return "", err
+			}
+			opts.discountCouponID = couponID
+		}
+	}
+
+	return service.createCheckoutSession(config, user, tier, opts)
+}
+
+func (service *Service) IsProUpgradeDiscountEligible(userID string) (bool, error) {
+	license, err := service.database.GetLicenseByUserID(userID)
+	if err != nil {
+		return false, err
+	}
+	if license == nil {
+		return false, ErrLicenseNotFound
+	}
+
+	hasPersonalPurchase, err := service.database.HasCompletedStripePurchaseForTier(userID, db.TierPersonal)
+	if err != nil {
+		return false, err
+	}
+
+	return shouldApplyProUpgradeDiscount(license, hasPersonalPurchase, db.TierPro), nil
 }
 
 func (service *Service) StartPersonalTrial(userID string) (*db.License, error) {
@@ -125,7 +185,7 @@ func (service *Service) StartPersonalTrial(userID string) (*db.License, error) {
 	return updatedLicense, nil
 }
 
-func createStripeCheckoutSession(cfg checkoutConfig, user *db.User, tier db.Tier) (string, error) {
+func createStripeCheckoutSession(cfg checkoutConfig, user *db.User, tier db.Tier, opts checkoutSessionOptions) (string, error) {
 	stripe.Key = cfg.secretKey
 
 	params := &stripe.CheckoutSessionParams{
@@ -145,6 +205,11 @@ func createStripeCheckoutSession(cfg checkoutConfig, user *db.User, tier db.Tier
 				Quantity: stripe.Int64(1),
 			},
 		},
+	}
+	if opts.discountCouponID != "" {
+		params.Discounts = []*stripe.CheckoutSessionDiscountParams{
+			{Coupon: stripe.String(opts.discountCouponID)},
+		}
 	}
 
 	session, err := checkoutsession.New(params)
@@ -183,6 +248,69 @@ func loadStripeCheckoutConfig() (checkoutConfig, error) {
 
 func errMissingStripeConfig(name string) error {
 	return &configError{name: name}
+}
+
+func (service *Service) createProUpgradeCoupon(cfg checkoutConfig) (string, error) {
+	personalPrice, err := service.fetchPrice(cfg.secretKey, cfg.prices[db.TierPersonal])
+	if err != nil {
+		return "", err
+	}
+
+	amountOff, currency, err := computeUpgradeDiscount(personalPrice)
+	if err != nil {
+		return "", err
+	}
+
+	return service.createCoupon(cfg.secretKey, amountOff, currency)
+}
+
+func shouldApplyProUpgradeDiscount(license *db.License, hasCompletedPersonalPurchase bool, requestedTier db.Tier) bool {
+	return requestedTier == db.TierPro &&
+		license != nil &&
+		license.Tier == db.TierPersonal &&
+		license.Status == db.LicenseStatusActive &&
+		hasCompletedPersonalPurchase
+}
+
+func computeUpgradeDiscount(personalPrice *stripe.Price) (int64, string, error) {
+	if personalPrice == nil {
+		return 0, "", errors.New("missing stripe price")
+	}
+	if personalPrice.Currency == "" {
+		return 0, "", errors.New("stripe price currency is required")
+	}
+	if personalPrice.UnitAmount <= 0 {
+		return 0, "", errors.New("stripe price amount is required")
+	}
+
+	return personalPrice.UnitAmount, strings.ToLower(string(personalPrice.Currency)), nil
+}
+
+func fetchStripePrice(secretKey string, priceID string) (*stripe.Price, error) {
+	if strings.TrimSpace(secretKey) == "" || strings.TrimSpace(priceID) == "" {
+		return nil, errors.New("stripe secret key and price id are required")
+	}
+
+	stripe.Key = secretKey
+	return priceapi.Get(priceID, nil)
+}
+
+func createStripeCoupon(secretKey string, amountOff int64, currency string) (string, error) {
+	if strings.TrimSpace(secretKey) == "" || amountOff <= 0 || strings.TrimSpace(currency) == "" {
+		return "", errors.New("stripe coupon config is invalid")
+	}
+
+	stripe.Key = secretKey
+	coupon, err := couponapi.New(&stripe.CouponParams{
+		AmountOff: stripe.Int64(amountOff),
+		Currency:  stripe.String(strings.ToLower(strings.TrimSpace(currency))),
+		Duration:  stripe.String(string(stripe.CouponDurationOnce)),
+		Name:      stripe.String("upgrade to pro"),
+	})
+	if err != nil {
+		return "", err
+	}
+	return coupon.ID, nil
 }
 
 type configError struct {
