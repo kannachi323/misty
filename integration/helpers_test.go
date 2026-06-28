@@ -182,6 +182,27 @@ func performJSONRequest(t *testing.T, handler http.HandlerFunc, method string, p
 	return rec
 }
 
+func performBearerJSONRequest(t *testing.T, handler http.HandlerFunc, method string, path string, body any, token string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	var payload bytes.Buffer
+	if body != nil {
+		if err := json.NewEncoder(&payload).Encode(body); err != nil {
+			t.Fatalf("json.NewEncoder() error = %v", err)
+		}
+	}
+
+	req := httptest.NewRequest(method, path, &payload)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
 func decodeJSONResponse(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	t.Helper()
 

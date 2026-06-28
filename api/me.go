@@ -12,12 +12,34 @@ import (
 const sessionCookieName = "misty_session"
 
 func sessionUserID(r *http.Request, database *db.Database) (string, error) {
-	cookie, err := r.Cookie(sessionCookieName)
-	if err != nil {
+	token, ok := sessionTokenFromRequest(r)
+	if !ok {
 		return "", nil
 	}
-	tokenHash := security.HashToken(cookie.Value)
+	tokenHash := security.HashToken(token)
 	return database.GetSessionUserID(tokenHash)
+}
+
+func sessionTokenFromRequest(r *http.Request) (string, bool) {
+	if token, ok := bearerTokenFromRequest(r); ok {
+		return token, true
+	}
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		return "", false
+	}
+	token := strings.TrimSpace(cookie.Value)
+	return token, token != ""
+}
+
+func bearerTokenFromRequest(r *http.Request) (string, bool) {
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	scheme, token, ok := strings.Cut(authHeader, " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") {
+		return "", false
+	}
+	token = strings.TrimSpace(token)
+	return token, token != ""
 }
 
 func GetMe(database *db.Database) http.HandlerFunc {
