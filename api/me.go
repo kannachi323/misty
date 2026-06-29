@@ -77,29 +77,17 @@ func GetMe(database *db.Database) http.HandlerFunc {
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
-<<<<<<< Updated upstream
-			"id":               user.ID,
-			"name":             user.Name,
-			"email":            user.Email,
-			"created_at":       user.CreatedAt,
-			"tier":             string(license.Tier),
-			"status":           license.Status,
-			"allows_use":       licenseAllowsUse(license),
-			"expires_at":       license.ExpiresAt,
-			"trial_started_at": license.TrialStartedAt,
-			"license_device":   license.LicenseDevice,
-=======
 			"id":                            user.ID,
 			"name":                          user.Name,
 			"email":                         user.Email,
 			"created_at":                    user.CreatedAt,
 			"tier":                          string(license.Tier),
 			"status":                        license.Status,
+			"allows_use":                    licenseAllowsUse(license),
 			"expires_at":                    license.ExpiresAt,
 			"trial_started_at":              license.TrialStartedAt,
 			"license_device":                license.LicenseDevice,
 			"pro_upgrade_discount_eligible": proUpgradeDiscountEligible,
->>>>>>> Stashed changes
 		})
 	}
 }
