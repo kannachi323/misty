@@ -24,6 +24,22 @@ func TestStripePurchaseUpsertAndLookup(t *testing.T) {
 		t.Fatalf("UpsertStripePurchase() error = %v", err)
 	}
 
+	hasProPurchase, err := database.HasCompletedStripePurchaseForTier(user.ID, TierPro)
+	if err != nil {
+		t.Fatalf("HasCompletedStripePurchaseForTier(pro) error = %v", err)
+	}
+	if !hasProPurchase {
+		t.Fatal("expected completed pro purchase to be detected")
+	}
+
+	hasPersonalPurchase, err := database.HasCompletedStripePurchaseForTier(user.ID, TierPersonal)
+	if err != nil {
+		t.Fatalf("HasCompletedStripePurchaseForTier(personal) error = %v", err)
+	}
+	if hasPersonalPurchase {
+		t.Fatal("unexpected completed personal purchase")
+	}
+
 	purchase.Status = "refunded"
 	purchase.EventSource = "charge.refunded"
 	if err := database.UpsertStripePurchase(purchase); err != nil {
@@ -46,19 +62,11 @@ func TestStripePurchaseUpsertAndLookup(t *testing.T) {
 		t.Fatalf("purchase IDs mismatch: %q vs %q", byCharge.ID, byIntent.ID)
 	}
 
-	hasProPurchase, err := database.HasCompletedStripePurchaseForTier(user.ID, TierPro)
+	hasProPurchase, err = database.HasCompletedStripePurchaseForTier(user.ID, TierPro)
 	if err != nil {
-		t.Fatalf("HasCompletedStripePurchaseForTier(pro) error = %v", err)
+		t.Fatalf("HasCompletedStripePurchaseForTier(pro after refund) error = %v", err)
 	}
-	if !hasProPurchase {
-		t.Fatal("expected completed pro purchase to be detected")
-	}
-
-	hasPersonalPurchase, err := database.HasCompletedStripePurchaseForTier(user.ID, TierPersonal)
-	if err != nil {
-		t.Fatalf("HasCompletedStripePurchaseForTier(personal) error = %v", err)
-	}
-	if hasPersonalPurchase {
-		t.Fatal("unexpected completed personal purchase")
+	if hasProPurchase {
+		t.Fatal("refunded pro purchase should not count as completed")
 	}
 }

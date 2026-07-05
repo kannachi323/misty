@@ -313,6 +313,92 @@ func TestStripeWebhookCheckoutCompletedIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestStripeWebhookCheckoutReplayAfterReversalDoesNotReactivatePaidTier(t *testing.T) {
+	database := openIntegrationDatabase(t)
+	loadTestEnv()
+	secret := strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET"))
+	if secret == "" {
+		t.Fatal("missing STRIPE_WEBHOOK_SECRET")
+	}
+
+	handler := api.StripeWebhookWithService(secret, newTestStripeService(database))
+
+	tests := []struct {
+		name           string
+		eventType      string
+		expectedStatus string
+		eventObject    func(chargeID string, paymentIntentID string) map[string]any
+	}{
+		{
+			name:           "refund",
+			eventType:      "charge.refunded",
+			expectedStatus: "refunded",
+			eventObject: func(chargeID, paymentIntentID string) map[string]any {
+				return map[string]any{
+					"id":             chargeID,
+					"payment_intent": paymentIntentID,
+				}
+			},
+		},
+		{
+			name:           "dispute",
+			eventType:      "charge.dispute.created",
+			expectedStatus: "disputed",
+			eventObject: func(chargeID, _ string) map[string]any {
+				return map[string]any{
+					"id":     "dp_" + uuid.NewString(),
+					"charge": chargeID,
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetIntegrationDatabase(t, database)
+
+			user, err := database.CreateUser("Replay Reversal User", tt.name+"-reversal@example.com", "password123")
+			if err != nil {
+				t.Fatalf("CreateUser() error = %v", err)
+			}
+
+			sessionID := "cs_" + uuid.NewString()
+			paymentIntentID := "pi_" + uuid.NewString()
+			chargeID := "ch_" + paymentIntentID
+			checkoutObject := checkoutEventObject(user, db.TierPro, sessionID, paymentIntentID, "cus_"+uuid.NewString())
+
+			if rec := sendSignedStripeWebhook(t, handler, secret, "checkout.session.completed", checkoutObject); rec.Code != http.StatusOK {
+				t.Fatalf("checkout webhook status = %d, want %d", rec.Code, http.StatusOK)
+			}
+			if rec := sendSignedStripeWebhook(t, handler, secret, tt.eventType, tt.eventObject(chargeID, paymentIntentID)); rec.Code != http.StatusOK {
+				t.Fatalf("%s webhook status = %d, want %d", tt.eventType, rec.Code, http.StatusOK)
+			}
+			if rec := sendSignedStripeWebhook(t, handler, secret, "checkout.session.completed", checkoutObject); rec.Code != http.StatusOK {
+				t.Fatalf("checkout replay status = %d, want %d", rec.Code, http.StatusOK)
+			}
+
+			license, err := database.GetLicenseByUserID(user.ID)
+			if err != nil || license == nil {
+				t.Fatalf("GetLicenseByUserID() error = %v, license = %#v", err, license)
+			}
+			if license.Tier != db.TierBasic || license.Status != db.LicenseStatusActive {
+				t.Fatalf("license after replay = (%q, %q), want (%q, %q)", license.Tier, license.Status, db.TierBasic, db.LicenseStatusActive)
+			}
+
+			purchase, err := database.GetStripePurchaseByPaymentIntent(paymentIntentID)
+			if err != nil || purchase == nil {
+				t.Fatalf("GetStripePurchaseByPaymentIntent() error = %v, purchase = %#v", err, purchase)
+			}
+			if purchase.Status != tt.expectedStatus {
+				t.Fatalf("purchase status after replay = %q, want %q", purchase.Status, tt.expectedStatus)
+			}
+			if purchase.EventSource != tt.eventType {
+				t.Fatalf("purchase event source after replay = %q, want %q", purchase.EventSource, tt.eventType)
+			}
+		})
+	}
+}
+
 func runStripePurchaseLifecycleTest(t *testing.T, eventType string, expectedStatus string, eventObject func(chargeID string, paymentIntentID string) map[string]any) {
 	t.Helper()
 

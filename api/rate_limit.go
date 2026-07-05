@@ -3,6 +3,7 @@ package api
 import (
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -179,15 +180,17 @@ func forgotPasswordRateLimitKey(r *http.Request, email string) string {
 }
 
 func clientIPFromRequest(r *http.Request) string {
-	if forwardedFor := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwardedFor != "" {
-		parts := strings.Split(forwardedFor, ",")
-		if candidate := strings.TrimSpace(parts[0]); candidate != "" {
-			return candidate
+	if trustProxyHeaders() {
+		if forwardedFor := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwardedFor != "" {
+			parts := strings.Split(forwardedFor, ",")
+			if candidate := strings.TrimSpace(parts[0]); candidate != "" {
+				return candidate
+			}
 		}
-	}
 
-	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
-		return realIP
+		if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+			return realIP
+		}
 	}
 
 	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
@@ -200,4 +203,9 @@ func clientIPFromRequest(r *http.Request) string {
 	}
 
 	return "unknown"
+}
+
+func trustProxyHeaders() bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("TRUST_PROXY_HEADERS")))
+	return value == "1" || value == "true" || value == "yes"
 }

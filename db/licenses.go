@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"log"
@@ -40,7 +41,8 @@ func createLicenseTx(tx *sql.Tx, licenseID string, userID string, tier Tier, sta
 		TrialStartedAt: nil,
 	}
 
-	_, err := tx.Exec(
+	_, err := tx.ExecContext(
+		context.Background(),
 		`INSERT INTO licenses (id, user_id, tier, status, expires_at, trial_started_at, license_device) VALUES ($1, $2, $3, $4, $5, $6, '')`,
 		license.ID, license.UserID, license.Tier, license.Status, license.ExpiresAt, license.TrialStartedAt,
 	)
@@ -56,10 +58,13 @@ func (db *Database) GetLicenseByUserID(userID string) (*License, error) {
 	var expiresAt sql.NullTime
 	var trialStartedAt sql.NullTime
 
-	err := db.Conn.QueryRow(
-		`SELECT id, user_id, tier, status, expires_at, trial_started_at, license_device FROM licenses WHERE user_id = $1`,
-		userID,
-	).Scan(&lic.ID, &lic.UserID, &lic.Tier, &lic.Status, &expiresAt, &trialStartedAt, &lic.LicenseDevice)
+	err := db.withRLSContext(context.Background(), userRLSSettings(userID), func(tx *sql.Tx) error {
+		return tx.QueryRowContext(
+			context.Background(),
+			`SELECT id, user_id, tier, status, expires_at, trial_started_at, license_device FROM licenses WHERE user_id = $1`,
+			userID,
+		).Scan(&lic.ID, &lic.UserID, &lic.Tier, &lic.Status, &expiresAt, &trialStartedAt, &lic.LicenseDevice)
+	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -91,25 +96,28 @@ func (db *Database) StartTrialByUserID(userID string, duration time.Duration) (b
 	now := time.Now().UTC()
 	expiresAt := now.Add(duration)
 
-	result, err := db.Conn.Exec(`
-		UPDATE licenses
-		SET tier = $2,
-			status = $3,
-			expires_at = $4,
-			trial_started_at = $5,
-			updated_at = NOW()
-		WHERE user_id = $1
-			AND tier = $6
-			AND status = $7
-			AND trial_started_at IS NULL
-	`, userID, TierPersonal, LicenseStatusTrialing, expiresAt, now, TierBasic, LicenseStatusActive)
+	var rowsAffected int64
+	err := db.withRLSContext(context.Background(), userRLSSettings(userID), func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(context.Background(), `
+			UPDATE licenses
+			SET tier = $2,
+				status = $3,
+				expires_at = $4,
+				trial_started_at = $5,
+				updated_at = NOW()
+			WHERE user_id = $1
+				AND tier = $6
+				AND status = $7
+				AND trial_started_at IS NULL
+		`, userID, TierPersonal, LicenseStatusTrialing, expiresAt, now, TierBasic, LicenseStatusActive)
+		if err != nil {
+			return err
+		}
+		rowsAffected, err = result.RowsAffected()
+		return err
+	})
 	if err != nil {
 		log.Println("Failed to start trial:", err)
-		return false, err
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
 		return false, err
 	}
 
@@ -117,14 +125,17 @@ func (db *Database) StartTrialByUserID(userID string, duration time.Duration) (b
 }
 
 func (db *Database) SetLicenseStateByID(licenseID string, tier Tier, status string, expiresAt *time.Time) error {
-	_, err := db.Conn.Exec(`
-		UPDATE licenses
-		SET tier = $2,
-			status = $3,
-			expires_at = $4,
-			updated_at = NOW()
-		WHERE id = $1
-	`, licenseID, tier, status, expiresAt)
+	err := db.withRLSContext(context.Background(), serviceRLSSettings(), func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(context.Background(), `
+			UPDATE licenses
+			SET tier = $2,
+				status = $3,
+				expires_at = $4,
+				updated_at = NOW()
+			WHERE id = $1
+		`, licenseID, tier, status, expiresAt)
+		return err
+	})
 	if err != nil {
 		log.Println("Failed to update license:", err)
 	}
@@ -132,14 +143,17 @@ func (db *Database) SetLicenseStateByID(licenseID string, tier Tier, status stri
 }
 
 func (db *Database) SetLicenseStateByUserID(userID string, tier Tier, status string, expiresAt *time.Time) error {
-	_, err := db.Conn.Exec(`
-		UPDATE licenses
-		SET tier = $2,
-			status = $3,
-			expires_at = $4,
-			updated_at = NOW()
-		WHERE user_id = $1
-	`, userID, tier, status, expiresAt)
+	err := db.withRLSContext(context.Background(), serviceRLSSettings(), func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(context.Background(), `
+			UPDATE licenses
+			SET tier = $2,
+				status = $3,
+				expires_at = $4,
+				updated_at = NOW()
+			WHERE user_id = $1
+		`, userID, tier, status, expiresAt)
+		return err
+	})
 	if err != nil {
 		log.Println("Failed to update license:", err)
 	}
@@ -147,12 +161,15 @@ func (db *Database) SetLicenseStateByUserID(userID string, tier Tier, status str
 }
 
 func (db *Database) UpdateLicenseDevice(userID, device string) error {
-	_, err := db.Conn.Exec(`
-		UPDATE licenses
-		SET license_device = $2,
-			updated_at = NOW()
-		WHERE user_id = $1
-	`, userID, device)
+	err := db.withRLSContext(context.Background(), userRLSSettings(userID), func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(context.Background(), `
+			UPDATE licenses
+			SET license_device = $2,
+				updated_at = NOW()
+			WHERE user_id = $1
+		`, userID, device)
+		return err
+	})
 	if err != nil {
 		log.Println("Failed to update license device:", err)
 	}

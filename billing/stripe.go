@@ -117,6 +117,11 @@ func (service *StripeService) handleCheckoutCompleted(session *checkoutCompleted
 		return
 	}
 
+	if service.isReplayedCompletedCheckoutAfterReversal(session) {
+		log.Printf("Ignoring replayed checkout completion for reversed session %s", session.ID)
+		return
+	}
+
 	if err := service.database.SetLicenseStateByID(licenseID, tier, db.LicenseStatusActive, nil); err != nil {
 		log.Printf("Failed to activate %s license %s: %v", tier, licenseID, err)
 		return
@@ -145,6 +150,22 @@ func (service *StripeService) handleCheckoutCompleted(session *checkoutCompleted
 	}
 
 	log.Printf("Provisioned %s license for user %s (%s)", tier, userID, session.CustomerDetails.Email)
+}
+
+func (service *StripeService) isReplayedCompletedCheckoutAfterReversal(session *checkoutCompletedEvent) bool {
+	purchase, err := service.database.GetStripePurchaseByCheckoutSessionID(strings.TrimSpace(session.ID))
+	if err != nil {
+		log.Printf("Failed to check existing purchase for session %s: %v", session.ID, err)
+		return false
+	}
+	if purchase == nil {
+		purchase, err = service.database.GetStripePurchaseByPaymentIntent(strings.TrimSpace(session.PaymentIntent))
+		if err != nil {
+			log.Printf("Failed to check existing purchase for payment intent %s: %v", session.PaymentIntent, err)
+			return false
+		}
+	}
+	return purchase != nil && (purchase.Status == stripePurchaseStatusRefunded || purchase.Status == stripePurchaseStatusDisputed)
 }
 
 func (service *StripeService) handleChargeRefunded(charge *refundedChargeEvent) {
