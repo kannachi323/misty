@@ -37,7 +37,11 @@ func StripeWebhookWithService(webhookSecret string, service *appbilling.StripeSe
 			return
 		}
 
-		service.HandleWebhookEvent(string(event.Type), event.Data.Raw)
+		if err := service.HandleWebhookEventWithID(event.ID, string(event.Type), event.Data.Raw); err != nil {
+			log.Println("Stripe event processing failed:", err)
+			http.Error(w, "event processing failed", http.StatusInternalServerError)
+			return
+		}
 
 		w.WriteHeader(http.StatusOK)
 	}

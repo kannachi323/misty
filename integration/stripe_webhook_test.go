@@ -28,12 +28,13 @@ func TestStripeWebhookCheckoutSessionCompletedUpgradesPaidTiers(t *testing.T) {
 	handler := api.StripeWebhookWithService(secret, newTestStripeService(database))
 
 	tests := []struct {
-		name      string
-		tier      db.Tier
-		seedTrial bool
+		name       string
+		legacyTier db.Tier
+		wantTier   db.Tier
+		seedTrial  bool
 	}{
-		{name: "personal_from_basic", tier: db.TierPersonal},
-		{name: "pro_from_trialing_personal", tier: db.TierPro, seedTrial: true},
+		{name: "personal_becomes_pro", legacyTier: db.TierPersonal, wantTier: db.TierPro},
+		{name: "pro_becomes_max", legacyTier: db.TierPro, wantTier: db.TierMax, seedTrial: true},
 	}
 
 	for _, tt := range tests {
@@ -65,7 +66,7 @@ func TestStripeWebhookCheckoutSessionCompletedUpgradesPaidTiers(t *testing.T) {
 
 			sessionID := "cs_" + uuid.NewString()
 			paymentIntentID := "pi_" + uuid.NewString()
-			rec := sendSignedStripeWebhook(t, handler, secret, "checkout.session.completed", checkoutEventObject(user, tt.tier, sessionID, paymentIntentID, "cus_"+uuid.NewString()))
+			rec := sendSignedStripeWebhook(t, handler, secret, "checkout.session.completed", checkoutEventObject(user, tt.legacyTier, sessionID, paymentIntentID, "cus_"+uuid.NewString()))
 			if rec.Code != http.StatusOK {
 				t.Fatalf("webhook status = %d, want %d, body = %q", rec.Code, http.StatusOK, rec.Body.String())
 			}
@@ -74,8 +75,8 @@ func TestStripeWebhookCheckoutSessionCompletedUpgradesPaidTiers(t *testing.T) {
 			if err != nil || license == nil {
 				t.Fatalf("GetLicenseByUserID() after webhook error = %v, license = %#v", err, license)
 			}
-			if license.Tier != tt.tier {
-				t.Fatalf("license tier = %q, want %q", license.Tier, tt.tier)
+			if license.Tier != tt.wantTier {
+				t.Fatalf("license tier = %q, want %q", license.Tier, tt.wantTier)
 			}
 			if license.Status != db.LicenseStatusActive {
 				t.Fatalf("license status = %q, want %q", license.Status, db.LicenseStatusActive)
@@ -91,8 +92,8 @@ func TestStripeWebhookCheckoutSessionCompletedUpgradesPaidTiers(t *testing.T) {
 			if purchase.UserID != user.ID || purchase.LicenseID != user.LicenseID {
 				t.Fatalf("purchase user/license = (%q, %q), want (%q, %q)", purchase.UserID, purchase.LicenseID, user.ID, user.LicenseID)
 			}
-			if purchase.TierPurchased != tt.tier {
-				t.Fatalf("purchase tier = %q, want %q", purchase.TierPurchased, tt.tier)
+			if purchase.TierPurchased != tt.wantTier {
+				t.Fatalf("purchase tier = %q, want %q", purchase.TierPurchased, tt.wantTier)
 			}
 			if purchase.StripeCheckoutSessionID != sessionID {
 				t.Fatalf("purchase session = %q, want %q", purchase.StripeCheckoutSessionID, sessionID)
@@ -308,8 +309,8 @@ func TestStripeWebhookCheckoutCompletedIsIdempotent(t *testing.T) {
 	if err != nil || license == nil {
 		t.Fatalf("GetLicenseByUserID() error = %v, license = %#v", err, license)
 	}
-	if license.Tier != db.TierPersonal || license.Status != db.LicenseStatusActive {
-		t.Fatalf("license = (%q, %q), want (%q, %q)", license.Tier, license.Status, db.TierPersonal, db.LicenseStatusActive)
+	if license.Tier != db.TierPro || license.Status != db.LicenseStatusActive {
+		t.Fatalf("license = (%q, %q), want (%q, %q)", license.Tier, license.Status, db.TierPro, db.LicenseStatusActive)
 	}
 }
 
@@ -456,6 +457,51 @@ func runStripePurchaseLifecycleTest(t *testing.T, eventType string, expectedStat
 				t.Fatalf("purchase event source = %q, want %q", purchase.EventSource, eventType)
 			}
 		})
+	}
+}
+
+func TestStripeSubscriptionLifecycleAndCreditAllowance(t *testing.T) {
+	database := openIntegrationDatabase(t)
+	secret := strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET"))
+	if secret == "" {
+		t.Fatal("missing STRIPE_WEBHOOK_SECRET")
+	}
+	handler := api.StripeWebhookWithService(secret, newTestStripeService(database))
+	t.Setenv("STRIPE_PRICE_MAX_MONTHLY", "price_max")
+	user, err := database.CreateUser("Subscriber", "subscriber@example.com", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscriptionID := "sub_" + uuid.NewString()
+	event := func(status string) map[string]any {
+		return map[string]any{
+			"id": subscriptionID, "customer": "cus_test", "status": status,
+			"current_period_end": time.Now().Add(30 * 24 * time.Hour).Unix(),
+			"metadata":           map[string]string{"user_id": user.ID, "license_id": user.LicenseID, "tier": "max", "interval": "month"},
+			"items":              map[string]any{"data": []any{map[string]any{"price": map[string]any{"id": "price_max", "recurring": map[string]any{"interval": "month"}}}}},
+		}
+	}
+	if rec := sendSignedStripeWebhook(t, handler, secret, "customer.subscription.created", event("active")); rec.Code != http.StatusOK {
+		t.Fatalf("active webhook = %d: %s", rec.Code, rec.Body.String())
+	}
+	license, _ := database.GetLicenseByUserID(user.ID)
+	if license == nil || license.Tier != db.TierMax {
+		t.Fatalf("active license = %#v", license)
+	}
+	wallet, err := database.GetOrCreateCreditWallet(user.ID, license.Tier, time.Now())
+	if err != nil || wallet.MonthlyAllowance != 6_000_000 {
+		t.Fatalf("max wallet = %#v, %v", wallet, err)
+	}
+	if rec := sendSignedStripeWebhook(t, handler, secret, "customer.subscription.deleted", event("canceled")); rec.Code != http.StatusOK {
+		t.Fatalf("canceled webhook = %d: %s", rec.Code, rec.Body.String())
+	}
+	license, _ = database.GetLicenseByUserID(user.ID)
+	if license == nil || license.Tier != db.TierBasic {
+		t.Fatalf("canceled license = %#v", license)
+	}
+	wallet, err = database.GetOrCreateCreditWallet(user.ID, license.Tier, time.Now())
+	if err != nil || wallet.MonthlyAllowance != 100_000 {
+		t.Fatalf("basic fallback wallet = %#v, %v", wallet, err)
 	}
 }
 

@@ -11,9 +11,11 @@ import (
 type Tier string
 
 const (
-	TierBasic    Tier = "basic"
+	TierBasic Tier = "basic"
+	// TierPersonal is retained only for interpreting historical purchases.
 	TierPersonal Tier = "personal"
 	TierPro      Tier = "pro"
+	TierMax      Tier = "max"
 )
 
 const (
@@ -29,6 +31,7 @@ type License struct {
 	ExpiresAt      *time.Time
 	TrialStartedAt *time.Time
 	LicenseDevice  string
+	LegacyTier     *Tier
 }
 
 func createLicenseTx(tx *sql.Tx, licenseID string, userID string, tier Tier, status string, expiresAt *time.Time) (*License, error) {
@@ -57,13 +60,14 @@ func (db *Database) GetLicenseByUserID(userID string) (*License, error) {
 	var lic License
 	var expiresAt sql.NullTime
 	var trialStartedAt sql.NullTime
+	var legacyTier sql.NullString
 
 	err := db.withRLSContext(context.Background(), userRLSSettings(userID), func(tx *sql.Tx) error {
 		return tx.QueryRowContext(
 			context.Background(),
-			`SELECT id, user_id, tier, status, expires_at, trial_started_at, license_device FROM licenses WHERE user_id = $1`,
+			`SELECT id, user_id, tier, status, expires_at, trial_started_at, license_device, legacy_tier FROM licenses WHERE user_id = $1`,
 			userID,
-		).Scan(&lic.ID, &lic.UserID, &lic.Tier, &lic.Status, &expiresAt, &trialStartedAt, &lic.LicenseDevice)
+		).Scan(&lic.ID, &lic.UserID, &lic.Tier, &lic.Status, &expiresAt, &trialStartedAt, &lic.LicenseDevice, &legacyTier)
 	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -79,12 +83,20 @@ func (db *Database) GetLicenseByUserID(userID string) (*License, error) {
 	if trialStartedAt.Valid {
 		lic.TrialStartedAt = &trialStartedAt.Time
 	}
+	if legacyTier.Valid {
+		value := Tier(legacyTier.String)
+		lic.LegacyTier = &value
+	}
 
 	if lic.Status == LicenseStatusTrialing && lic.ExpiresAt != nil && !lic.ExpiresAt.After(time.Now()) {
-		if err := db.SetLicenseStateByID(lic.ID, TierBasic, LicenseStatusActive, nil); err != nil {
+		fallback := TierBasic
+		if lic.LegacyTier != nil {
+			fallback = *lic.LegacyTier
+		}
+		if err := db.SetLicenseStateByID(lic.ID, fallback, LicenseStatusActive, nil); err != nil {
 			return nil, err
 		}
-		lic.Tier = TierBasic
+		lic.Tier = fallback
 		lic.Status = LicenseStatusActive
 		lic.ExpiresAt = nil
 	}
@@ -109,7 +121,7 @@ func (db *Database) StartTrialByUserID(userID string, duration time.Duration) (b
 				AND tier = $6
 				AND status = $7
 				AND trial_started_at IS NULL
-		`, userID, TierPersonal, LicenseStatusTrialing, expiresAt, now, TierBasic, LicenseStatusActive)
+		`, userID, TierPro, LicenseStatusTrialing, expiresAt, now, TierBasic, LicenseStatusActive)
 		if err != nil {
 			return err
 		}
@@ -158,6 +170,13 @@ func (db *Database) SetLicenseStateByUserID(userID string, tier Tier, status str
 		log.Println("Failed to update license:", err)
 	}
 	return err
+}
+
+func (db *Database) SetLegacyTierByID(licenseID string, tier *Tier) error {
+	return db.withRLSContext(context.Background(), serviceRLSSettings(), func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(context.Background(), `UPDATE licenses SET legacy_tier = $2, updated_at = NOW() WHERE id = $1`, licenseID, tier)
+		return err
+	})
 }
 
 func (db *Database) UpdateLicenseDevice(userID, device string) error {

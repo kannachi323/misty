@@ -2,97 +2,43 @@ package billing
 
 import (
 	"testing"
+	"time"
 
 	"github.com/kannachi323/misty/server/db"
-	"github.com/stripe/stripe-go/v82"
 )
 
-func TestLoadStripeCheckoutConfig(t *testing.T) {
-	t.Setenv("STRIPE_SECRET_KEY", "sk_test_123")
-	t.Setenv("STRIPE_CHECKOUT_SUCCESS_URL", "https://app.example.com/success")
-	t.Setenv("STRIPE_CHECKOUT_CANCEL_URL", "https://app.example.com/cancel")
-	t.Setenv("STRIPE_PRICE_PERSONAL", "price_personal")
-	t.Setenv("STRIPE_PRICE_PRO", "price_pro")
+func setStripeConfig(t *testing.T) {
+	t.Helper()
+	values := map[string]string{"STRIPE_SECRET_KEY": "sk_test", "STRIPE_CHECKOUT_SUCCESS_URL": "https://app/success", "STRIPE_CHECKOUT_CANCEL_URL": "https://app/cancel",
+		"STRIPE_PORTAL_RETURN_URL": "https://app/account", "STRIPE_PRICE_PRO_MONTHLY": "price_pm", "STRIPE_PRICE_PRO_YEARLY": "price_py",
+		"STRIPE_PRICE_MAX_MONTHLY": "price_mm", "STRIPE_PRICE_MAX_YEARLY": "price_my", "STRIPE_PRICE_CREDITS_1500": "price_c1", "STRIPE_PRICE_CREDITS_3500": "price_c2"}
+	for key, value := range values {
+		t.Setenv(key, value)
+	}
+}
 
+func TestLoadStripeCheckoutConfig(t *testing.T) {
+	setStripeConfig(t)
 	cfg, err := loadStripeCheckoutConfig()
 	if err != nil {
-		t.Fatalf("loadStripeCheckoutConfig() error = %v", err)
+		t.Fatal(err)
 	}
-
-	if cfg.prices[db.TierPersonal] != "price_personal" {
-		t.Fatalf("personal price = %q, want %q", cfg.prices[db.TierPersonal], "price_personal")
-	}
-	if cfg.prices[db.TierPro] != "price_pro" {
-		t.Fatalf("pro price = %q, want %q", cfg.prices[db.TierPro], "price_pro")
+	if got := cfg.prices[priceKey{db.TierMax, BillingIntervalYear}]; got != "price_my" {
+		t.Fatalf("max yearly price = %q", got)
 	}
 }
 
-func TestLoadStripeCheckoutConfigRequiresPrice(t *testing.T) {
-	t.Setenv("STRIPE_SECRET_KEY", "sk_test_123")
-	t.Setenv("STRIPE_CHECKOUT_SUCCESS_URL", "https://app.example.com/success")
-	t.Setenv("STRIPE_CHECKOUT_CANCEL_URL", "https://app.example.com/cancel")
-	t.Setenv("STRIPE_PRICE_PERSONAL", "price_personal")
-	t.Setenv("STRIPE_PRICE_PRO", "")
-
-	if _, err := loadStripeCheckoutConfig(); err == nil {
-		t.Fatal("loadStripeCheckoutConfig() succeeded without STRIPE_PRICE_PRO")
+func TestPricingConstants(t *testing.T) {
+	if !validPaidTier(db.TierPro) || !validPaidTier(db.TierMax) || validPaidTier(db.TierBasic) {
+		t.Fatal("paid tier validation mismatch")
 	}
-}
-
-func TestShouldApplyProUpgradeDiscount(t *testing.T) {
-	license := &db.License{Tier: db.TierPersonal, Status: db.LicenseStatusActive}
-	if !shouldApplyProUpgradeDiscount(license, true, db.TierPro) {
-		t.Fatal("expected active personal purchase to be upgrade eligible")
+	if packCredits(CreditPackSmall) != 1_500_000 || packCredits(CreditPackLarge) != 3_500_000 {
+		t.Fatal("credit pack mismatch")
 	}
-	if shouldApplyProUpgradeDiscount(license, false, db.TierPro) {
-		t.Fatal("expected missing personal purchase to block upgrade discount")
+	if packAmountMinor(CreditPackSmall) != 499 || packAmountMinor(CreditPackLarge) != 999 {
+		t.Fatal("credit pack amount mismatch")
 	}
-	if shouldApplyProUpgradeDiscount(&db.License{Tier: db.TierPersonal, Status: db.LicenseStatusTrialing}, true, db.TierPro) {
-		t.Fatal("expected trialing personal license to block upgrade discount")
-	}
-	if shouldApplyProUpgradeDiscount(&db.License{Tier: db.TierBasic, Status: db.LicenseStatusActive}, true, db.TierPro) {
-		t.Fatal("expected basic license to block upgrade discount")
-	}
-	if shouldApplyProUpgradeDiscount(license, true, db.TierPersonal) {
-		t.Fatal("expected personal checkout to skip upgrade discount")
-	}
-}
-
-func TestComputeUpgradeDiscount(t *testing.T) {
-	personal := &stripe.Price{Currency: stripe.CurrencyUSD, UnitAmount: 2500}
-
-	amountOff, currency, err := computeUpgradeDiscount(personal)
-	if err != nil {
-		t.Fatalf("computeUpgradeDiscount() error = %v", err)
-	}
-	if amountOff != 2500 {
-		t.Fatalf("amountOff = %d, want %d", amountOff, 2500)
-	}
-	if currency != "usd" {
-		t.Fatalf("currency = %q, want %q", currency, "usd")
-	}
-}
-
-func TestComputeUpgradeDiscountRejectsInvalidPricing(t *testing.T) {
-	tests := []struct {
-		name     string
-		personal *stripe.Price
-	}{
-		{
-			name:     "missing price",
-			personal: nil,
-		},
-		{
-			name:     "missing amount",
-			personal: &stripe.Price{Currency: stripe.CurrencyUSD, UnitAmount: 0},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if _, _, err := computeUpgradeDiscount(tt.personal); err == nil {
-				t.Fatal("computeUpgradeDiscount() succeeded for invalid pricing")
-			}
-		})
+	if ProTrialDuration != 14*24*time.Hour {
+		t.Fatal("trial duration mismatch")
 	}
 }

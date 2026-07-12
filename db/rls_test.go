@@ -12,6 +12,12 @@ func TestTablesHaveRowLevelSecurityEnabled(t *testing.T) {
 		"password_reset_tokens",
 		"waitlist_signups",
 		"stripe_purchases",
+		"stripe_subscriptions",
+		"stripe_webhook_events",
+		"credit_wallets",
+		"credit_reservations",
+		"credit_ledger",
+		"credit_purchases",
 	}
 
 	for _, table := range tables {

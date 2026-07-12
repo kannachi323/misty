@@ -34,7 +34,7 @@ func TestStartTrialByUserIDAndExpiredTrialAutoDowngrade(t *testing.T) {
 		UPDATE licenses
 		SET tier = $2, status = $3, expires_at = $4, trial_started_at = $5
 		WHERE user_id = $1
-	`, user.ID, TierPersonal, LicenseStatusTrialing, expiredAt, expiredAt.Add(-24*time.Hour)); err != nil {
+	`, user.ID, TierPro, LicenseStatusTrialing, expiredAt, expiredAt.Add(-24*time.Hour)); err != nil {
 		t.Fatalf("license update error = %v", err)
 	}
 

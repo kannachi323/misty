@@ -8,53 +8,67 @@ import (
 
 	"github.com/kannachi323/misty/server/db"
 	"github.com/stripe/stripe-go/v82"
+	portalsession "github.com/stripe/stripe-go/v82/billingportal/session"
 	checkoutsession "github.com/stripe/stripe-go/v82/checkout/session"
-	couponapi "github.com/stripe/stripe-go/v82/coupon"
-	priceapi "github.com/stripe/stripe-go/v82/price"
 )
 
-const PersonalTrialDuration = 14 * 24 * time.Hour
+const ProTrialDuration = 14 * 24 * time.Hour
+
+type BillingInterval string
+
+const (
+	BillingIntervalMonth BillingInterval = "month"
+	BillingIntervalYear  BillingInterval = "year"
+)
+
+const (
+	CreditPackSmall = "credits_1500"
+	CreditPackLarge = "credits_3500"
+)
 
 var (
-	ErrInvalidTier      = errors.New("invalid tier")
-	ErrUserNotFound     = errors.New("user not found")
-	ErrLicenseNotFound  = errors.New("license not found")
-	ErrTrialUnavailable = errors.New("trial unavailable")
+	ErrInvalidTier        = errors.New("invalid tier")
+	ErrInvalidInterval    = errors.New("invalid billing interval")
+	ErrInvalidCreditPack  = errors.New("invalid credit pack")
+	ErrUserNotFound       = errors.New("user not found")
+	ErrLicenseNotFound    = errors.New("license not found")
+	ErrTrialUnavailable   = errors.New("trial unavailable")
+	ErrSubscriptionExists = errors.New("active subscription already exists")
+	ErrPortalUnavailable  = errors.New("customer portal unavailable")
 )
 
+type priceKey struct {
+	tier     db.Tier
+	interval BillingInterval
+}
+
 type checkoutConfig struct {
-	secretKey  string
-	successURL string
-	cancelURL  string
-	prices     map[db.Tier]string
+	secretKey       string
+	successURL      string
+	cancelURL       string
+	portalReturnURL string
+	prices          map[priceKey]string
+	creditPrices    map[string]string
 }
 
-type checkoutSessionOptions struct {
-	discountCouponID string
-}
-
-type CheckoutSessionCreator func(cfg checkoutConfig, user *db.User, tier db.Tier, opts checkoutSessionOptions) (string, error)
-type StripePriceFetcher func(secretKey string, priceID string) (*stripe.Price, error)
-type StripeCouponCreator func(secretKey string, amountOff int64, currency string) (string, error)
+type CheckoutSessionCreator func(cfg checkoutConfig, user *db.User, tier db.Tier, interval BillingInterval, customerID string) (string, error)
+type CreditCheckoutSessionCreator func(cfg checkoutConfig, user *db.User, packID, customerID string) (string, error)
+type PortalSessionCreator func(secretKey, customerID, returnURL string) (string, error)
 
 type Service struct {
-	database              *db.Database
-	createCheckoutSession CheckoutSessionCreator
-	fetchPrice            StripePriceFetcher
-	createCoupon          StripeCouponCreator
-	trialDuration         time.Duration
+	database             *db.Database
+	createCheckout       CheckoutSessionCreator
+	createCreditCheckout CreditCheckoutSessionCreator
+	createPortal         PortalSessionCreator
+	trialDuration        time.Duration
 }
 
 type ServiceOption func(*Service)
 
 func NewService(database *db.Database, opts ...ServiceOption) *Service {
-	service := &Service{
-		database:              database,
-		createCheckoutSession: createStripeCheckoutSession,
-		fetchPrice:            fetchStripePrice,
-		createCoupon:          createStripeCoupon,
-		trialDuration:         PersonalTrialDuration,
-	}
+	service := &Service{database: database, createCheckout: createStripeCheckoutSession,
+		createCreditCheckout: createStripeCreditCheckoutSession, createPortal: createStripePortalSession,
+		trialDuration: ProTrialDuration}
 	for _, opt := range opts {
 		opt(service)
 	}
@@ -64,23 +78,23 @@ func NewService(database *db.Database, opts ...ServiceOption) *Service {
 func WithCheckoutSessionCreator(fn CheckoutSessionCreator) ServiceOption {
 	return func(service *Service) {
 		if fn != nil {
-			service.createCheckoutSession = fn
+			service.createCheckout = fn
 		}
 	}
 }
 
-func WithStripePriceFetcher(fn StripePriceFetcher) ServiceOption {
+func WithCreditCheckoutSessionCreator(fn CreditCheckoutSessionCreator) ServiceOption {
 	return func(service *Service) {
 		if fn != nil {
-			service.fetchPrice = fn
+			service.createCreditCheckout = fn
 		}
 	}
 }
 
-func WithStripeCouponCreator(fn StripeCouponCreator) ServiceOption {
+func WithPortalSessionCreator(fn PortalSessionCreator) ServiceOption {
 	return func(service *Service) {
 		if fn != nil {
-			service.createCoupon = fn
+			service.createPortal = fn
 		}
 	}
 }
@@ -93,11 +107,19 @@ func WithTrialDuration(duration time.Duration) ServiceOption {
 	}
 }
 
-func (service *Service) CreateCheckoutSession(userID string, tier db.Tier) (string, error) {
-	if tier != db.TierPersonal && tier != db.TierPro {
+func validPaidTier(tier db.Tier) bool { return tier == db.TierPro || tier == db.TierMax }
+
+func validInterval(interval BillingInterval) bool {
+	return interval == BillingIntervalMonth || interval == BillingIntervalYear
+}
+
+func (service *Service) CreateCheckoutSession(userID string, tier db.Tier, interval BillingInterval) (string, error) {
+	if !validPaidTier(tier) {
 		return "", ErrInvalidTier
 	}
-
+	if !validInterval(interval) {
+		return "", ErrInvalidInterval
+	}
 	user, err := service.database.GetUserByID(userID)
 	if err != nil {
 		return "", err
@@ -105,48 +127,62 @@ func (service *Service) CreateCheckoutSession(userID string, tier db.Tier) (stri
 	if user == nil {
 		return "", ErrUserNotFound
 	}
-
-	config, err := loadStripeCheckoutConfig()
+	existing, err := service.database.GetStripeSubscriptionByUserID(userID)
 	if err != nil {
 		return "", err
 	}
-
-	opts := checkoutSessionOptions{}
-	if tier == db.TierPro {
-		eligible, err := service.IsProUpgradeDiscountEligible(userID)
-		if err != nil {
-			return "", err
-		}
-		if eligible {
-			couponID, err := service.createProUpgradeCoupon(config)
-			if err != nil {
-				return "", err
-			}
-			opts.discountCouponID = couponID
-		}
+	if existing != nil && db.SubscriptionAllowsPaidAccess(existing.Status) {
+		return "", ErrSubscriptionExists
 	}
-
-	return service.createCheckoutSession(config, user, tier, opts)
+	cfg, err := loadStripeCheckoutConfig()
+	if err != nil {
+		return "", err
+	}
+	customerID := ""
+	if existing != nil {
+		customerID = existing.StripeCustomerID
+	}
+	return service.createCheckout(cfg, user, tier, interval, customerID)
 }
 
-func (service *Service) IsProUpgradeDiscountEligible(userID string) (bool, error) {
-	license, err := service.database.GetLicenseByUserID(userID)
+func (service *Service) CreateCreditCheckoutSession(userID, packID string) (string, error) {
+	if packCredits(packID) == 0 {
+		return "", ErrInvalidCreditPack
+	}
+	user, err := service.database.GetUserByID(userID)
 	if err != nil {
-		return false, err
+		return "", err
 	}
-	if license == nil {
-		return false, ErrLicenseNotFound
+	if user == nil {
+		return "", ErrUserNotFound
 	}
-
-	hasPersonalPurchase, err := service.database.HasCompletedStripePurchaseForTier(userID, db.TierPersonal)
+	cfg, err := loadStripeCheckoutConfig()
 	if err != nil {
-		return false, err
+		return "", err
 	}
-
-	return shouldApplyProUpgradeDiscount(license, hasPersonalPurchase, db.TierPro), nil
+	customerID, err := service.database.GetStripeCustomerIDForUser(userID)
+	if err != nil {
+		return "", err
+	}
+	return service.createCreditCheckout(cfg, user, packID, customerID)
 }
 
-func (service *Service) StartPersonalTrial(userID string) (*db.License, error) {
+func (service *Service) CreatePortalSession(userID string) (string, error) {
+	cfg, err := loadStripeCheckoutConfig()
+	if err != nil {
+		return "", err
+	}
+	customerID, err := service.database.GetStripeCustomerIDForUser(userID)
+	if err != nil {
+		return "", err
+	}
+	if customerID == "" {
+		return "", ErrPortalUnavailable
+	}
+	return service.createPortal(cfg.secretKey, customerID, cfg.portalReturnURL)
+}
+
+func (service *Service) StartProTrial(userID string) (*db.License, error) {
 	license, err := service.database.GetLicenseByUserID(userID)
 	if err != nil {
 		return nil, err
@@ -157,7 +193,6 @@ func (service *Service) StartPersonalTrial(userID string) (*db.License, error) {
 	if license.TrialStartedAt != nil || license.Tier != db.TierBasic || license.Status != db.LicenseStatusActive {
 		return nil, ErrTrialUnavailable
 	}
-
 	hasPurchase, err := service.database.HasCompletedStripePurchase(userID)
 	if err != nil {
 		return nil, err
@@ -165,7 +200,6 @@ func (service *Service) StartPersonalTrial(userID string) (*db.License, error) {
 	if hasPurchase {
 		return nil, ErrTrialUnavailable
 	}
-
 	started, err := service.database.StartTrialByUserID(userID, service.trialDuration)
 	if err != nil {
 		return nil, err
@@ -173,45 +207,26 @@ func (service *Service) StartPersonalTrial(userID string) (*db.License, error) {
 	if !started {
 		return nil, ErrTrialUnavailable
 	}
-
-	updatedLicense, err := service.database.GetLicenseByUserID(userID)
-	if err != nil {
-		return nil, err
-	}
-	if updatedLicense == nil {
-		return nil, ErrLicenseNotFound
-	}
-
-	return updatedLicense, nil
+	return service.database.GetLicenseByUserID(userID)
 }
 
-func createStripeCheckoutSession(cfg checkoutConfig, user *db.User, tier db.Tier, opts checkoutSessionOptions) (string, error) {
+// StartPersonalTrial remains as a compatibility shim for existing callers.
+func (service *Service) StartPersonalTrial(userID string) (*db.License, error) {
+	return service.StartProTrial(userID)
+}
+
+func createStripeCheckoutSession(cfg checkoutConfig, user *db.User, tier db.Tier, interval BillingInterval, customerID string) (string, error) {
 	stripe.Key = cfg.secretKey
-
-	params := &stripe.CheckoutSessionParams{
-		Mode:              stripe.String(string(stripe.CheckoutSessionModePayment)),
-		SuccessURL:        stripe.String(cfg.successURL),
-		CancelURL:         stripe.String(cfg.cancelURL),
-		ClientReferenceID: stripe.String(user.ID),
-		CustomerEmail:     stripe.String(user.Email),
-		Metadata: map[string]string{
-			"user_id":    user.ID,
-			"license_id": user.LicenseID,
-			"tier":       string(tier),
-		},
-		LineItems: []*stripe.CheckoutSessionLineItemParams{
-			{
-				Price:    stripe.String(cfg.prices[tier]),
-				Quantity: stripe.Int64(1),
-			},
-		},
+	metadata := map[string]string{"user_id": user.ID, "license_id": user.LicenseID, "tier": string(tier), "interval": string(interval), "kind": "subscription"}
+	params := &stripe.CheckoutSessionParams{Mode: stripe.String(string(stripe.CheckoutSessionModeSubscription)),
+		SuccessURL: stripe.String(cfg.successURL), CancelURL: stripe.String(cfg.cancelURL), ClientReferenceID: stripe.String(user.ID),
+		Metadata: metadata, SubscriptionData: &stripe.CheckoutSessionSubscriptionDataParams{Metadata: metadata},
+		LineItems: []*stripe.CheckoutSessionLineItemParams{{Price: stripe.String(cfg.prices[priceKey{tier: tier, interval: interval}]), Quantity: stripe.Int64(1)}}}
+	if customerID != "" {
+		params.Customer = stripe.String(customerID)
+	} else {
+		params.CustomerEmail = stripe.String(user.Email)
 	}
-	if opts.discountCouponID != "" {
-		params.Discounts = []*stripe.CheckoutSessionDiscountParams{
-			{Coupon: stripe.String(opts.discountCouponID)},
-		}
-	}
-
 	session, err := checkoutsession.New(params)
 	if err != nil {
 		return "", err
@@ -219,104 +234,80 @@ func createStripeCheckoutSession(cfg checkoutConfig, user *db.User, tier db.Tier
 	return session.URL, nil
 }
 
+func createStripeCreditCheckoutSession(cfg checkoutConfig, user *db.User, packID, customerID string) (string, error) {
+	stripe.Key = cfg.secretKey
+	metadata := map[string]string{"user_id": user.ID, "license_id": user.LicenseID, "kind": "credit_pack", "pack_id": packID}
+	params := &stripe.CheckoutSessionParams{Mode: stripe.String(string(stripe.CheckoutSessionModePayment)), SuccessURL: stripe.String(cfg.successURL),
+		CancelURL: stripe.String(cfg.cancelURL), ClientReferenceID: stripe.String(user.ID), Metadata: metadata,
+		LineItems: []*stripe.CheckoutSessionLineItemParams{{Price: stripe.String(cfg.creditPrices[packID]), Quantity: stripe.Int64(1)}}}
+	if customerID != "" {
+		params.Customer = stripe.String(customerID)
+	} else {
+		params.CustomerEmail = stripe.String(user.Email)
+	}
+	session, err := checkoutsession.New(params)
+	if err != nil {
+		return "", err
+	}
+	return session.URL, nil
+}
+
+func createStripePortalSession(secretKey, customerID, returnURL string) (string, error) {
+	stripe.Key = secretKey
+	session, err := portalsession.New(&stripe.BillingPortalSessionParams{Customer: stripe.String(customerID), ReturnURL: stripe.String(returnURL)})
+	if err != nil {
+		return "", err
+	}
+	return session.URL, nil
+}
+
 func loadStripeCheckoutConfig() (checkoutConfig, error) {
-	cfg := checkoutConfig{
-		secretKey:  strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")),
-		successURL: strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_SUCCESS_URL")),
-		cancelURL:  strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_CANCEL_URL")),
-		prices: map[db.Tier]string{
-			db.TierPersonal: strings.TrimSpace(os.Getenv("STRIPE_PRICE_PERSONAL")),
-			db.TierPro:      strings.TrimSpace(os.Getenv("STRIPE_PRICE_PRO")),
-		},
+	cfg := checkoutConfig{secretKey: strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")),
+		successURL: strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_SUCCESS_URL")), cancelURL: strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_CANCEL_URL")),
+		portalReturnURL: strings.TrimSpace(os.Getenv("STRIPE_PORTAL_RETURN_URL")),
+		prices: map[priceKey]string{
+			{tier: db.TierPro, interval: BillingIntervalMonth}: strings.TrimSpace(os.Getenv("STRIPE_PRICE_PRO_MONTHLY")),
+			{tier: db.TierPro, interval: BillingIntervalYear}:  strings.TrimSpace(os.Getenv("STRIPE_PRICE_PRO_YEARLY")),
+			{tier: db.TierMax, interval: BillingIntervalMonth}: strings.TrimSpace(os.Getenv("STRIPE_PRICE_MAX_MONTHLY")),
+			{tier: db.TierMax, interval: BillingIntervalYear}:  strings.TrimSpace(os.Getenv("STRIPE_PRICE_MAX_YEARLY")),
+		}, creditPrices: map[string]string{
+			CreditPackSmall: strings.TrimSpace(os.Getenv("STRIPE_PRICE_CREDITS_1500")), CreditPackLarge: strings.TrimSpace(os.Getenv("STRIPE_PRICE_CREDITS_3500")),
+		}}
+	required := []struct{ name, value string }{{"STRIPE_SECRET_KEY", cfg.secretKey}, {"STRIPE_CHECKOUT_SUCCESS_URL", cfg.successURL},
+		{"STRIPE_CHECKOUT_CANCEL_URL", cfg.cancelURL}, {"STRIPE_PORTAL_RETURN_URL", cfg.portalReturnURL},
+		{"STRIPE_PRICE_PRO_MONTHLY", cfg.prices[priceKey{db.TierPro, BillingIntervalMonth}]}, {"STRIPE_PRICE_PRO_YEARLY", cfg.prices[priceKey{db.TierPro, BillingIntervalYear}]},
+		{"STRIPE_PRICE_MAX_MONTHLY", cfg.prices[priceKey{db.TierMax, BillingIntervalMonth}]}, {"STRIPE_PRICE_MAX_YEARLY", cfg.prices[priceKey{db.TierMax, BillingIntervalYear}]},
+		{"STRIPE_PRICE_CREDITS_1500", cfg.creditPrices[CreditPackSmall]}, {"STRIPE_PRICE_CREDITS_3500", cfg.creditPrices[CreditPackLarge]}}
+	for _, item := range required {
+		if item.value == "" {
+			return checkoutConfig{}, &configError{name: item.name}
+		}
 	}
+	return cfg, nil
+}
 
-	switch {
-	case cfg.secretKey == "":
-		return checkoutConfig{}, errMissingStripeConfig("STRIPE_SECRET_KEY")
-	case cfg.successURL == "":
-		return checkoutConfig{}, errMissingStripeConfig("STRIPE_CHECKOUT_SUCCESS_URL")
-	case cfg.cancelURL == "":
-		return checkoutConfig{}, errMissingStripeConfig("STRIPE_CHECKOUT_CANCEL_URL")
-	case cfg.prices[db.TierPersonal] == "":
-		return checkoutConfig{}, errMissingStripeConfig("STRIPE_PRICE_PERSONAL")
-	case cfg.prices[db.TierPro] == "":
-		return checkoutConfig{}, errMissingStripeConfig("STRIPE_PRICE_PRO")
+func packCredits(packID string) int64 {
+	switch packID {
+	case CreditPackSmall:
+		return 1_500 * db.CreditDenominationScale
+	case CreditPackLarge:
+		return 3_500 * db.CreditDenominationScale
 	default:
-		return cfg, nil
+		return 0
 	}
 }
 
-func errMissingStripeConfig(name string) error {
-	return &configError{name: name}
+func packAmountMinor(packID string) int64 {
+	switch packID {
+	case CreditPackSmall:
+		return 499
+	case CreditPackLarge:
+		return 999
+	default:
+		return 0
+	}
 }
 
-func (service *Service) createProUpgradeCoupon(cfg checkoutConfig) (string, error) {
-	personalPrice, err := service.fetchPrice(cfg.secretKey, cfg.prices[db.TierPersonal])
-	if err != nil {
-		return "", err
-	}
+type configError struct{ name string }
 
-	amountOff, currency, err := computeUpgradeDiscount(personalPrice)
-	if err != nil {
-		return "", err
-	}
-
-	return service.createCoupon(cfg.secretKey, amountOff, currency)
-}
-
-func shouldApplyProUpgradeDiscount(license *db.License, hasCompletedPersonalPurchase bool, requestedTier db.Tier) bool {
-	return requestedTier == db.TierPro &&
-		license != nil &&
-		license.Tier == db.TierPersonal &&
-		license.Status == db.LicenseStatusActive &&
-		hasCompletedPersonalPurchase
-}
-
-func computeUpgradeDiscount(personalPrice *stripe.Price) (int64, string, error) {
-	if personalPrice == nil {
-		return 0, "", errors.New("missing stripe price")
-	}
-	if personalPrice.Currency == "" {
-		return 0, "", errors.New("stripe price currency is required")
-	}
-	if personalPrice.UnitAmount <= 0 {
-		return 0, "", errors.New("stripe price amount is required")
-	}
-
-	return personalPrice.UnitAmount, strings.ToLower(string(personalPrice.Currency)), nil
-}
-
-func fetchStripePrice(secretKey string, priceID string) (*stripe.Price, error) {
-	if strings.TrimSpace(secretKey) == "" || strings.TrimSpace(priceID) == "" {
-		return nil, errors.New("stripe secret key and price id are required")
-	}
-
-	stripe.Key = secretKey
-	return priceapi.Get(priceID, nil)
-}
-
-func createStripeCoupon(secretKey string, amountOff int64, currency string) (string, error) {
-	if strings.TrimSpace(secretKey) == "" || amountOff <= 0 || strings.TrimSpace(currency) == "" {
-		return "", errors.New("stripe coupon config is invalid")
-	}
-
-	stripe.Key = secretKey
-	coupon, err := couponapi.New(&stripe.CouponParams{
-		AmountOff: stripe.Int64(amountOff),
-		Currency:  stripe.String(strings.ToLower(strings.TrimSpace(currency))),
-		Duration:  stripe.String(string(stripe.CouponDurationOnce)),
-		Name:      stripe.String("upgrade to pro"),
-	})
-	if err != nil {
-		return "", err
-	}
-	return coupon.ID, nil
-}
-
-type configError struct {
-	name string
-}
-
-func (e *configError) Error() string {
-	return e.name + " is required"
-}
+func (e *configError) Error() string { return e.name + " is required" }

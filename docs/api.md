@@ -41,6 +41,12 @@ Responses:
 - `400` when email/password are missing or JSON is invalid
 - `409` when the email is already registered
 
+The optional `X-Misty-Analytics-Enabled: true` header persists explicit analytics consent and permits the authoritative `user_registered` event. Missing/false consent remains disabled. `X-Misty-Platform` and `X-Misty-Release-Channel` are accepted only as allowlisted analytics properties.
+
+`PUT /me/telemetry`
+
+Authenticated JSON body with `analytics_enabled` and `error_reporting_enabled` booleans. This synchronizes the app's independent privacy preferences; verified billing transitions re-check the stored analytics preference before emitting PostHog events.
+
 `POST /login`
 
 Body: `{ "email": string, "password": string }`
@@ -83,7 +89,7 @@ All dashboard routes require authentication.
 
 `GET /me`
 
-Returns account fields plus public license state: `tier`, `status`, `allows_use`, `expires_at`, `trial_started_at`, `license_device`, and `pro_upgrade_discount_eligible`. It intentionally does not expose the internal license ID.
+Returns account fields plus public license state: `tier`, `status`, `allows_use`, `expires_at`, `trial_started_at`, and `license_device`. `billing` describes the public billing kind, cadence, subscription status, renewal date, scheduled cancellation, and portal availability. Stripe and internal license IDs are never exposed.
 
 `PUT /me/profile`
 
@@ -105,23 +111,41 @@ Body: `{ "email_updates_enabled": bool }`
 
 `POST /billing/trial/start`
 
-Starts a one-time 14-day personal trial only when the user has an active basic license, has not started a trial before, and has no completed purchase history.
+Starts a one-time 14-day Pro trial only when the user has an active Basic license, has not started a trial before, and has no completed purchase history.
 
 `POST /billing/checkout-session`
 
-Body: `{ "tier": "personal" | "pro" }`
+Body: `{ "tier": "pro" | "max", "interval": "month" | "year" }`
 
-Returns `{ "url": string }`. Pro checkout may include an upgrade coupon when the user has an active paid personal purchase.
+Returns a Stripe subscription Checkout `{ "url": string }`. Existing active subscribers must use the Customer Portal.
+
+`POST /billing/credit-checkout-session`
+
+Body: `{ "pack_id": "credits_1500" | "credits_3500" }`. Returns one-time Stripe Checkout `{ "url": string }`.
+The stable pack identifiers grant 1,500,000 and 3,500,000 micro-credits respectively; their names are retained for API and Stripe metadata compatibility.
+
+`POST /billing/portal-session`
+
+Returns a Stripe Customer Portal `{ "url": string }` for an authenticated Stripe customer.
+
+`GET /billing/usage`
+
+Returns the current plan, monthly allowance and balance, purchased balance, reserved balance, next reset, total available credits, and consumption grouped by meter.
 
 `POST /stripe/webhook`
 
 Stripe-signed only. Handled event types:
 
-- `checkout.session.completed`: validates user/license/tier metadata, activates paid tier, and records purchase.
+- `checkout.session.completed`: records legacy lifetime purchases or grants a validated prepaid credit pack.
+- `customer.subscription.created|updated|deleted`: persists canonical subscription state and recomputes the effective tier, preserving lifetime fallback rights.
 - `charge.refunded`: marks the purchase refunded and downgrades the license to active basic.
 - `charge.dispute.created`: marks the purchase disputed and downgrades the license to active basic.
 
 Replay behavior: repeated checkout completion is idempotent. A checkout completion replay after a refund or dispute is ignored so it cannot reactivate a paid tier.
+
+`POST /ai/complete`
+
+Authenticated managed completion used by AI automation nodes. It consumes the shared `automation_ai` credit meter and returns `text`, the public Mika `model`, `credits_used`, and `credits_remaining`. Managed AI endpoints return structured HTTP `402` with `code: "credits_exhausted"` when a reservation cannot be funded.
 
 ## Waitlist
 
@@ -134,10 +158,19 @@ Returns `202` after storing the signup and sending the confirmation email. Dupli
 ## AI
 
 All AI routes require authentication. AI JSON bodies are limited to 2 MiB.
+Provider-producing routes additionally enforce a 32 KiB prompt limit, bounded
+tool results, one in-flight request per user, 12 provider calls per minute, 120
+per hour, and at most three provider calls per user turn. Rate limits return
+structured HTTP `429` with `code: "rate_limited"` and `Retry-After`; requests are
+never queued or retried automatically. Cancellation returns
+`code: "request_canceled"` to the interrupted request.
 
 `GET /ai/status`
 
-Returns provider/model status and a static running state.
+Returns provider-neutral Mika status and a static running state. `provider` is
+always `misty`; `model` is the subscription-selected `mika-low`, `mika-med`, or
+`mika-high`; and `model_name` is the corresponding display name. Concrete AI
+provider and model identifiers are never exposed by public AI endpoints.
 
 `POST /ai/sessions`
 

@@ -62,16 +62,24 @@ func NewAPIRateLimiter() *APIRateLimiter {
 		defaultGET:   RateLimitPolicy{Limit: 120, Window: time.Minute},
 		defaultWrite: RateLimitPolicy{Limit: 30, Window: time.Minute},
 		routePolicies: map[string]RateLimitPolicy{
-			"POST /register":                 {Limit: 10, Window: time.Minute},
-			"POST /login":                    {Limit: 20, Window: time.Minute},
-			"POST /waitlist":                 {Limit: 10, Window: time.Minute},
-			"POST /auth/forgot":              {Limit: 8, Window: time.Minute},
-			"GET /auth/reset/start":          {Limit: 20, Window: time.Minute},
-			"GET /auth/reset/validate":       {Limit: 20, Window: time.Minute},
-			"POST /auth/reset":               {Limit: 10, Window: time.Minute},
-			"POST /billing/trial/start":      {Limit: 10, Window: time.Minute},
-			"POST /billing/checkout-session": {Limit: 20, Window: time.Minute},
-			"POST /stripe/webhook":           {Limit: 120, Window: time.Minute},
+			"POST /register":                             {Limit: 10, Window: time.Minute},
+			"POST /login":                                {Limit: 20, Window: time.Minute},
+			"POST /waitlist":                             {Limit: 10, Window: time.Minute},
+			"POST /auth/forgot":                          {Limit: 8, Window: time.Minute},
+			"GET /auth/reset/start":                      {Limit: 20, Window: time.Minute},
+			"GET /auth/reset/validate":                   {Limit: 20, Window: time.Minute},
+			"POST /auth/reset":                           {Limit: 10, Window: time.Minute},
+			"POST /billing/trial/start":                  {Limit: 10, Window: time.Minute},
+			"POST /billing/checkout-session":             {Limit: 10, Window: time.Minute},
+			"POST /billing/credit-checkout-session":      {Limit: 10, Window: time.Minute},
+			"POST /billing/portal-session":               {Limit: 20, Window: time.Minute},
+			"POST /stripe/webhook":                       {Limit: 120, Window: time.Minute},
+			"POST /ai/complete":                          {Limit: 12, Window: time.Minute},
+			"POST /ai/sessions":                          {Limit: 20, Window: time.Hour},
+			"POST /ai/sessions/{sessionID}/messages":     {Limit: 12, Window: time.Minute},
+			"POST /ai/sessions/{sessionID}/tool-results": {Limit: 24, Window: time.Minute},
+			"GET /ai/sessions/{sessionID}/events":        {Limit: 120, Window: time.Minute},
+			"POST /ai/sessions/{sessionID}/cancel":       {Limit: 30, Window: time.Minute},
 		},
 		limiters: make(map[string]*SlidingWindowLimiter),
 	}
@@ -153,10 +161,17 @@ func normalizeRateLimitPath(path string) string {
 		return "/"
 	}
 	if strings.HasPrefix(trimmed, "/api/") {
-		return trimmed[len("/api"):]
+		trimmed = trimmed[len("/api"):]
 	}
 	if trimmed == "/api" {
 		return "/"
+	}
+	parts := strings.Split(strings.Trim(trimmed, "/"), "/")
+	if len(parts) == 4 && parts[0] == "ai" && parts[1] == "sessions" {
+		switch parts[3] {
+		case "messages", "events", "tool-results", "cancel":
+			return "/ai/sessions/{sessionID}/" + parts[3]
+		}
 	}
 	return trimmed
 }
