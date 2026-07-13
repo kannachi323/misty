@@ -18,6 +18,10 @@ func TestTablesHaveRowLevelSecurityEnabled(t *testing.T) {
 		"credit_reservations",
 		"credit_ledger",
 		"credit_purchases",
+		"smart_library_folders",
+		"smart_library_assets",
+		"smart_library_batches",
+		"smart_library_cost_events",
 	}
 
 	for _, table := range tables {
