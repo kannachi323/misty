@@ -77,9 +77,11 @@ func NewAPIRateLimiter() *APIRateLimiter {
 			"POST /ai/complete":                          {Limit: 12, Window: time.Minute},
 			"POST /ai/sessions":                          {Limit: 20, Window: time.Hour},
 			"POST /ai/sessions/{sessionID}/messages":     {Limit: 12, Window: time.Minute},
-			"POST /ai/sessions/{sessionID}/tool-results": {Limit: 24, Window: time.Minute},
+			"POST /ai/sessions/{sessionID}/tool-results": {Limit: 30, Window: time.Minute},
 			"GET /ai/sessions/{sessionID}/events":        {Limit: 120, Window: time.Minute},
 			"POST /ai/sessions/{sessionID}/cancel":       {Limit: 30, Window: time.Minute},
+			"POST /ai/media-search/chunks":               {Limit: 60, Window: time.Minute},
+			"POST /ai/media-search/search":               {Limit: 60, Window: time.Minute},
 		},
 		limiters: make(map[string]*SlidingWindowLimiter),
 	}
