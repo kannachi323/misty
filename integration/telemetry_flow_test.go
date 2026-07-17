@@ -33,7 +33,7 @@ func TestRegistrationTelemetryRequiresExplicitConsent(t *testing.T) {
 	client := &capturedTelemetry{}
 	handler := api.RegisterWithTelemetry(database, client)
 
-	request := httptest.NewRequest(http.MethodPost, "/register", bytes.NewBufferString(`{"name":"Telemetry User","email":"telemetry-`+uuid.NewString()+`@example.com","password":"password123"}`))
+	request := httptest.NewRequest(http.MethodPost, "/register", bytes.NewBufferString(`{"name":"Telemetry User","username":"telemetry_`+strings.ReplaceAll(uuid.NewString(), "-", "")[:12]+`","email":"telemetry-`+uuid.NewString()+`@example.com","password":"password123"}`))
 	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
@@ -41,7 +41,7 @@ func TestRegistrationTelemetryRequiresExplicitConsent(t *testing.T) {
 		t.Fatalf("without consent status=%d registrations=%d", recorder.Code, client.registrations)
 	}
 
-	request = httptest.NewRequest(http.MethodPost, "/register", bytes.NewBufferString(`{"name":"Telemetry User","email":"telemetry-`+uuid.NewString()+`@example.com","password":"password123"}`))
+	request = httptest.NewRequest(http.MethodPost, "/register", bytes.NewBufferString(`{"name":"Telemetry User","username":"telemetry_`+strings.ReplaceAll(uuid.NewString(), "-", "")[:12]+`","email":"telemetry-`+uuid.NewString()+`@example.com","password":"password123"}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Misty-Analytics-Enabled", "true")
 	recorder = httptest.NewRecorder()

@@ -1,5 +1,7 @@
 # Misty Server API
 
+The canonical Mika → Spaces → Agents → Workflows contracts, privacy model, workflow-version semantics, and endpoint index are documented in [agent-architecture.md](agent-architecture.md).
+
 All routes are mounted at the root path and again under `/api`, except `/stripe/webhook`, which is root-only for Stripe.
 
 JSON request bodies are limited to 8 KiB unless noted. Unknown fields and trailing JSON are rejected on handlers that use the shared decoder. Authenticated endpoints accept either the `misty_session` cookie or an `Authorization: Bearer <token>` header.
@@ -33,13 +35,16 @@ The test helpers refuse to reset a database whose name does not contain `test`.
 
 `POST /register`
 
-Body: `{ "name": string, "email": string, "password": string }`
+Body: `{ "name": string, "username": string, "email": string, "password": string }`
+
+`username` is required, normalized to lowercase, and must contain 3–30 ASCII
+letters, numbers, or underscores.
 
 Responses:
 
-- `201` with `{ "user_id": string }`
-- `400` when email/password are missing or JSON is invalid
-- `409` when the email is already registered
+- `201` with the authenticated user, including `user_id` and `username`
+- `400` when username/email/password are missing, the username is invalid, or JSON is invalid
+- `409` when the email is already registered or the username is taken
 
 The optional `X-Misty-Analytics-Enabled: true` header persists explicit analytics consent and permits the authoritative `user_registered` event. Missing/false consent remains disabled. `X-Misty-Platform` and `X-Misty-Release-Channel` are accepted only as allowlisted analytics properties.
 

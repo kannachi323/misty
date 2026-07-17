@@ -95,6 +95,7 @@ func GetMe(database *db.Database) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"id":               user.ID,
 			"name":             user.Name,
+			"username":         user.Username,
 			"email":            user.Email,
 			"created_at":       user.CreatedAt,
 			"tier":             string(license.Tier),
