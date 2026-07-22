@@ -1,9 +1,7 @@
 package api
 
 import (
-	"net"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +13,10 @@ type SlidingWindowLimiter struct {
 	limit   int
 	window  time.Duration
 	history map[string][]time.Time
+	// maxKeys bounds the tracked callers. Without it, a caller that varies its
+	// key (a spoofed address, a sprayed path) grows this map until the process
+	// is killed — the limiter becomes the denial of service.
+	maxKeys int
 }
 
 type ForgotPasswordRateLimiter struct {
@@ -33,6 +35,14 @@ type APIRateLimiter struct {
 	defaultWrite  RateLimitPolicy
 	routePolicies map[string]RateLimitPolicy
 	limiters      map[string]*SlidingWindowLimiter
+	// abuse escalates repeated rejections into a temporary block.
+	abuse *AbuseGuard
+}
+
+// WithAbuseGuard wires rejections into the shared abuse guard.
+func (l *APIRateLimiter) WithAbuseGuard(guard *AbuseGuard) *APIRateLimiter {
+	l.abuse = guard
+	return l
 }
 
 func NewSlidingWindowLimiter(limit int, window time.Duration) *SlidingWindowLimiter {
@@ -47,8 +57,15 @@ func NewSlidingWindowLimiter(limit int, window time.Duration) *SlidingWindowLimi
 		limit:   limit,
 		window:  window,
 		history: make(map[string][]time.Time),
+		maxKeys: defaultLimiterMaxKeys,
 	}
 }
+
+// defaultLimiterMaxKeys caps distinct callers tracked per limiter. Well past
+// any realistic concurrent client count, small enough to bound memory.
+const defaultLimiterMaxKeys = 20000
+
+// Keys are client addresses, so this tracks distinct callers per route.
 
 func NewForgotPasswordRateLimiter(limit int, window time.Duration) *ForgotPasswordRateLimiter {
 	return &ForgotPasswordRateLimiter{
@@ -83,6 +100,22 @@ func NewAPIRateLimiter() *APIRateLimiter {
 			"POST /ai/media-search/chunks":                  {Limit: 60, Window: time.Minute},
 			"POST /ai/media-search/search":                  {Limit: 60, Window: time.Minute},
 			"POST /spaces/{spaceID}/library/reauthenticate": {Limit: 5, Window: time.Minute},
+
+			// Provider fan-out: each of these makes an upstream call on Misty's own
+			// credentials, so abuse burns third-party quota and can get the app
+			// rate limited or banned rather than merely costing us CPU.
+			"POST /spaces/{spaceID}/integrations/discord/link":              {Limit: 5, Window: time.Minute},
+			"POST /spaces/{spaceID}/integrations/discord/link/{id}/sync":    {Limit: 10, Window: time.Minute},
+			"POST /spaces/{spaceID}/integrations/discord/link/{id}/publish": {Limit: 20, Window: time.Minute},
+			"GET /spaces/{spaceID}/integrations/notion/sources":             {Limit: 10, Window: time.Minute},
+			"GET /spaces/{spaceID}/integrations/notion/search":              {Limit: 20, Window: time.Minute},
+			"POST /spaces/{spaceID}/integrations/notion/pages":              {Limit: 20, Window: time.Minute},
+			"POST /spaces/{spaceID}/calendar/sync":                          {Limit: 6, Window: time.Minute},
+			"POST /spaces/{spaceID}/tasks/calendar":                         {Limit: 20, Window: time.Minute},
+
+			// OAuth start is cheap for us but creates state rows and drives users
+			// at a third-party consent screen.
+			"POST /spaces/{spaceID}/integrations/{provider}/authorize": {Limit: 10, Window: time.Minute},
 		},
 		limiters: make(map[string]*SlidingWindowLimiter),
 	}
@@ -100,6 +133,17 @@ func (l *SlidingWindowLimiter) Allow(key string, now time.Time) (bool, time.Dura
 		}
 	}
 
+	if len(requests) == 0 && len(l.history) >= l.maxKeys {
+		// A new caller arriving at capacity: drop entries whose window has
+		// fully elapsed, which is the common case under a spray.
+		l.purgeExpired(cutoff)
+	}
+	if len(requests) == 0 && len(l.history) >= l.maxKeys {
+		// Still full of live entries, so this is sustained abuse rather than
+		// churn. Refuse rather than grow without bound.
+		return false, l.window
+	}
+
 	if len(requests) >= l.limit {
 		l.history[key] = requests
 		retryAfter := requests[0].Add(l.window).Sub(now)
@@ -113,6 +157,30 @@ func (l *SlidingWindowLimiter) Allow(key string, now time.Time) (bool, time.Dura
 	return true, 0
 }
 
+// purgeExpired drops callers with no activity inside the current window.
+// The caller must hold the mutex.
+func (l *SlidingWindowLimiter) purgeExpired(cutoff time.Time) {
+	for key, timestamps := range l.history {
+		live := false
+		for _, timestamp := range timestamps {
+			if timestamp.After(cutoff) {
+				live = true
+				break
+			}
+		}
+		if !live {
+			delete(l.history, key)
+		}
+	}
+}
+
+// TrackedKeys reports how many callers this limiter is holding state for.
+func (l *SlidingWindowLimiter) TrackedKeys() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.history)
+}
+
 func (l *APIRateLimiter) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
@@ -123,8 +191,19 @@ func (l *APIRateLimiter) Middleware(next http.Handler) http.Handler {
 		path := normalizeRateLimitPath(r.URL.Path)
 		policy := l.policyFor(r.Method, path)
 		limiter := l.limiterFor(r.Method, path, policy)
-		allowed, retryAfter := limiter.Allow(clientIPFromRequest(r)+"|"+r.Method+"|"+path, l.now())
+		// Cost-bearing routes are charged to the account, so spreading a
+		// credential across many addresses buys no extra budget. Everything
+		// else stays keyed on the address, which is the only identity an
+		// unauthenticated caller has.
+		key := clientIPFromRequest(r)
+		if costBearingRoutes[path] {
+			key = rateLimitIdentity(r)
+		}
+		allowed, retryAfter := limiter.Allow(key, l.now())
 		if !allowed {
+			if l.abuse != nil {
+				l.abuse.RecordRejection(key)
+			}
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(retryAfter)))
 			http.Error(w, "too many requests", http.StatusTooManyRequests)
 			return
@@ -144,6 +223,11 @@ func (l *APIRateLimiter) policyFor(method, path string) RateLimitPolicy {
 	return l.defaultWrite
 }
 
+// maxTrackedRoutes bounds the limiters map. Real deployments register far
+// fewer route shapes; anything beyond this is a caller inventing paths, and
+// those share one overflow bucket instead of allocating unboundedly.
+const maxTrackedRoutes = 512
+
 func (l *APIRateLimiter) limiterFor(method, path string, policy RateLimitPolicy) *SlidingWindowLimiter {
 	key := method + " " + path
 
@@ -151,11 +235,46 @@ func (l *APIRateLimiter) limiterFor(method, path string, policy RateLimitPolicy)
 	defer l.mu.Unlock()
 
 	limiter, ok := l.limiters[key]
-	if !ok {
-		limiter = NewSlidingWindowLimiter(policy.Limit, policy.Window)
-		l.limiters[key] = limiter
+	if ok {
+		return limiter
 	}
+	if len(l.limiters) >= maxTrackedRoutes {
+		key = method + " " + overflowRouteKey
+		if overflow, exists := l.limiters[key]; exists {
+			return overflow
+		}
+	}
+	limiter = NewSlidingWindowLimiter(policy.Limit, policy.Window)
+	l.limiters[key] = limiter
 	return limiter
+}
+
+const overflowRouteKey = "{overflow}"
+
+// costBearingRoutes spend money or third-party quota on Misty's credentials, so
+// they are charged per account rather than per address. Keyed by the normalized
+// path the limiter already computes.
+var costBearingRoutes = map[string]bool{
+	"/ai/complete":                                             true,
+	"/ai/sessions":                                             true,
+	"/ai/sessions/{sessionID}/messages":                        true,
+	"/ai/sessions/{sessionID}/tool-results":                    true,
+	"/ai/media-search/chunks":                                  true,
+	"/ai/media-search/search":                                  true,
+	"/spaces/{spaceID}/calendar/sync":                          true,
+	"/spaces/{spaceID}/tasks/calendar":                         true,
+	"/spaces/{spaceID}/integrations/discord/link":              true,
+	"/spaces/{spaceID}/integrations/discord/link/{id}/sync":    true,
+	"/spaces/{spaceID}/integrations/discord/link/{id}/publish": true,
+	"/spaces/{spaceID}/integrations/notion/sources":            true,
+	"/spaces/{spaceID}/integrations/notion/search":             true,
+	"/spaces/{spaceID}/integrations/notion/pages":              true,
+	"/spaces/{spaceID}/integrations/{provider}/authorize":      true,
+	// Egress and storage operations bill per byte and per request.
+	"/spaces/{spaceID}/library/exports/download":     true,
+	"/spaces/{spaceID}/library/items/{id}/download":  true,
+	"/spaces/{spaceID}/attachments/{id}/download":    true,
+	"/spaces/{spaceID}/library/shared/{id}/download": true,
 }
 
 func normalizeRateLimitPath(path string) string {
@@ -179,7 +298,44 @@ func normalizeRateLimitPath(path string) string {
 			return "/ai/sessions/{sessionID}/" + parts[3]
 		}
 	}
+	// Space-scoped routes carry ids in the path. Collapsing them keeps one
+	// budget per route shape instead of handing out a fresh budget per Space —
+	// and keeps the number of tracked route templates bounded.
+	if parts[0] == "spaces" && len(parts) >= 2 {
+		parts[1] = "{spaceID}"
+		if len(parts) == 5 && parts[2] == "integrations" && parts[4] == "authorize" {
+			parts[3] = "{provider}"
+		}
+		for index := 2; index < len(parts); index++ {
+			if looksLikeRatePathIdentifier(parts[index]) {
+				parts[index] = "{id}"
+			}
+		}
+		return "/" + strings.Join(parts, "/")
+	}
 	return trimmed
+}
+
+// looksLikeRatePathIdentifier reports whether a segment is a generated id
+// rather than a fixed route word. Misty ids are prefixed UUIDs ("msg_<uuid>")
+// or bare UUID/hex, and provider ids are similar, so length plus a separator or
+// pure hex is a reliable signal without a per-route table.
+func looksLikeRatePathIdentifier(segment string) bool {
+	if len(segment) < 16 {
+		return false
+	}
+	if strings.ContainsAny(segment, "_-") {
+		return true
+	}
+	for _, character := range segment {
+		isHex := (character >= '0' && character <= '9') ||
+			(character >= 'a' && character <= 'f') ||
+			(character >= 'A' && character <= 'F')
+		if !isHex {
+			return false
+		}
+	}
+	return true
 }
 
 func retryAfterSeconds(duration time.Duration) int {
@@ -198,35 +354,4 @@ func retryAfterSeconds(duration time.Duration) int {
 
 func forgotPasswordRateLimitKey(r *http.Request, email string) string {
 	return clientIPFromRequest(r) + "|" + strings.ToLower(strings.TrimSpace(email))
-}
-
-func clientIPFromRequest(r *http.Request) string {
-	if trustProxyHeaders() {
-		if forwardedFor := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwardedFor != "" {
-			parts := strings.Split(forwardedFor, ",")
-			if candidate := strings.TrimSpace(parts[0]); candidate != "" {
-				return candidate
-			}
-		}
-
-		if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
-			return realIP
-		}
-	}
-
-	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
-	if err == nil && host != "" {
-		return host
-	}
-
-	if remote := strings.TrimSpace(r.RemoteAddr); remote != "" {
-		return remote
-	}
-
-	return "unknown"
-}
-
-func trustProxyHeaders() bool {
-	value := strings.ToLower(strings.TrimSpace(os.Getenv("TRUST_PROXY_HEADERS")))
-	return value == "1" || value == "true" || value == "yes"
 }

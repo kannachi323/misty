@@ -62,6 +62,8 @@ func TestTablesHaveRowLevelSecurityEnabled(t *testing.T) {
 		"space_inbox_items",
 		"space_tasks",
 		"space_calendar_sources",
+		"space_discord_links",
+		"abuse_blocks",
 		"space_calendar_events",
 		"provider_shared_resources",
 		"provider_content_records",

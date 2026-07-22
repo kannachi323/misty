@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	appbilling "github.com/kannachi323/misty/server/billing"
 	"github.com/kannachi323/misty/server/db"
@@ -15,8 +16,22 @@ func StripeWebhook(database *db.Database) http.HandlerFunc {
 	return StripeWebhookWithService(os.Getenv("STRIPE_WEBHOOK_SECRET"), appbilling.NewStripeService(database))
 }
 
+// minimumStripeWebhookSecretLength rejects placeholder values. Stripe issues
+// secrets of the form "whsec_..." that are far longer than this.
+const minimumStripeWebhookSecretLength = 16
+
 func StripeWebhookWithService(webhookSecret string, service *appbilling.StripeService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// An empty secret is still a valid HMAC key, so signature verification
+		// would happily accept an event any attacker can sign — handing out
+		// paid tiers and credits for free. Refuse to process anything until the
+		// secret is actually configured.
+		if len(strings.TrimSpace(webhookSecret)) < minimumStripeWebhookSecretLength {
+			log.Println("Stripe webhook rejected: STRIPE_WEBHOOK_SECRET is not configured")
+			http.Error(w, "webhook not configured", http.StatusServiceUnavailable)
+			return
+		}
+
 		body, err := io.ReadAll(io.LimitReader(r.Body, 65536))
 		if err != nil {
 			http.Error(w, "failed to read body", http.StatusBadRequest)
