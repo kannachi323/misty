@@ -27,12 +27,13 @@ import (
 )
 
 type SpacesService struct {
-	database *db.Database
-	agent    *serveragent.Service
-	library  *SpaceLibraryService
-	aead     cipher.AEAD
-	keyVer   int16
-	workers  sync.Once
+	database    *db.Database
+	agent       *serveragent.Service
+	library     *SpaceLibraryService
+	avatarStore LibraryObjectStore
+	aead        cipher.AEAD
+	keyVer      int16
+	workers     sync.Once
 }
 
 func NewSpacesService(database *db.Database, agent *serveragent.Service, encryptionKey string) (*SpacesService, error) {
@@ -56,6 +57,12 @@ func NewSpacesService(database *db.Database, agent *serveragent.Service, encrypt
 // requesting user; the provider is only the byte/object transport.
 func (s *SpacesService) SetLibraryProvider(library *SpaceLibraryService) {
 	s.library = library
+}
+
+// SetAvatarStore installs the object store used to serve member avatars, which
+// live under the avatars/ prefix in the shared bucket.
+func (s *SpacesService) SetAvatarStore(store LibraryObjectStore) {
+	s.avatarStore = store
 }
 
 func parseSpaceEncryptionKey(value string) ([]byte, error) {
@@ -124,21 +131,19 @@ func (s *SpacesService) MemberAvatar() http.HandlerFunc {
 		if !ok {
 			return
 		}
-		data, version, err := s.database.SpaceMemberAvatar(
-			r.Context(),
-			requestingUserID,
-			chi.URLParam(r, "spaceID"),
-			chi.URLParam(r, "userID"),
-		)
+		spaceID := chi.URLParam(r, "spaceID")
+		memberID := chi.URLParam(r, "userID")
+		version, err := s.database.SpaceMemberAvatarMeta(r.Context(), requestingUserID, spaceID, memberID)
 		if err != nil {
 			writeSpaceError(w, err)
 			return
 		}
-		if len(data) == 0 {
+		if version == 0 {
 			writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
 			return
 		}
-		writeAvatarPNG(w, data, version)
+		// Authorization was checked above; stream the bytes from the object store.
+		serveAvatarObject(w, r, s.avatarStore, memberID, version)
 	}
 }
 

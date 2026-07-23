@@ -2,6 +2,9 @@ package api
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"image/png"
 	"io"
 	"net/http"
@@ -116,7 +119,10 @@ func GetMe(database *db.Database) http.HandlerFunc {
 
 const maxAvatarPNGBytes = 5 << 20
 
-func UserAvatar(database *db.Database) http.HandlerFunc {
+// avatarObjectKey is where a user's avatar PNG lives in the shared object store.
+func avatarObjectKey(userID string) string { return "avatars/" + userID }
+
+func UserAvatar(database *db.Database, store LibraryObjectStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, err := sessionUserID(r, database)
 		if err != nil {
@@ -130,22 +136,36 @@ func UserAvatar(database *db.Database) http.HandlerFunc {
 
 		switch r.Method {
 		case http.MethodGet:
-			data, version, err := database.GetUserAvatar(userID)
+			version, err := database.GetUserAvatarVersion(userID)
 			if err != nil {
 				http.Error(w, "internal error", http.StatusInternalServerError)
 				return
 			}
-			if len(data) == 0 {
+			if version == 0 {
 				http.Error(w, "avatar not found", http.StatusNotFound)
 				return
 			}
-			writeAvatarPNG(w, data, version)
+			serveAvatarObject(w, r, store, userID, version)
 		case http.MethodPut:
 			data, ok := readAvatarPNG(w, r)
 			if !ok {
 				return
 			}
-			version, err := database.UpdateUserAvatar(userID, data)
+			if store == nil {
+				http.Error(w, "avatar storage unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			sum := sha256.Sum256(data)
+			metadata := LibraryObjectMetadata{
+				ByteSize: int64(len(data)),
+				SHA256:   hex.EncodeToString(sum[:]),
+				MIMEType: "image/png",
+			}
+			if err := store.Put(r.Context(), avatarObjectKey(userID), bytes.NewReader(data), metadata); err != nil {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			version, err := database.BumpUserAvatarVersion(userID)
 			if err != nil {
 				http.Error(w, "internal error", http.StatusInternalServerError)
 				return
@@ -156,6 +176,34 @@ func UserAvatar(database *db.Database) http.HandlerFunc {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	}
+}
+
+// serveAvatarObject streams a user's avatar PNG from the object store (R2).
+// The version supplies the ETag; a missing object is a 404.
+func serveAvatarObject(
+	w http.ResponseWriter,
+	r *http.Request,
+	store LibraryObjectStore,
+	userID string,
+	version int64,
+) {
+	if store == nil {
+		http.Error(w, "avatar not found", http.StatusNotFound)
+		return
+	}
+	reader, _, err := store.Open(r.Context(), avatarObjectKey(userID))
+	if err != nil {
+		if errors.Is(err, ErrLibraryObjectNotFound) {
+			http.Error(w, "avatar not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	defer reader.Close()
+	setAvatarHeaders(w, version)
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, reader)
 }
 
 func readAvatarPNG(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
@@ -173,13 +221,11 @@ func readAvatarPNG(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	return data, true
 }
 
-func writeAvatarPNG(w http.ResponseWriter, data []byte, version int64) {
+func setAvatarHeaders(w http.ResponseWriter, version int64) {
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "private, max-age=300")
 	w.Header().Set("ETag", `"avatar-`+strconv.FormatInt(version, 10)+`"`)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
 }
 
 func UpdateProfile(database *db.Database) http.HandlerFunc {

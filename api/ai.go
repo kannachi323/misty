@@ -73,17 +73,21 @@ func (s *AIService) CreateSession() http.HandlerFunc {
 			AgentID    string `json:"agent_id"`
 			AgentJobID string `json:"agent_job_id"`
 			SpaceID    string `json:"space_id"`
-			ModelID    string `json:"model_id"`
+			ModelID         string `json:"model_id"`
+			ReasoningEffort string `json:"reasoning_effort"`
 		}
 		if r.ContentLength > 0 && decodeAIJSON(w, r, &body) != nil {
 			return
 		}
 		body.AgentID, body.SpaceID, body.ModelID = strings.TrimSpace(body.AgentID), strings.TrimSpace(body.SpaceID), strings.TrimSpace(body.ModelID)
+		// A per-chat effort override (sent by the composer) wins over the agent default.
+		requestedReasoningEffort := strings.TrimSpace(body.ReasoningEffort)
 		// A chat may pin its own model, distinct from the agent's configured
 		// default. When the client sends a model_id it overrides the agent's
 		// model for this session only; the agent's stored model is never touched.
 		requestedModelID := body.ModelID
 		systemPrompt := ""
+		reasoningEffort := ""
 		allowTools := true
 		allowWriteTools := true
 		if body.AgentID != "" {
@@ -115,6 +119,7 @@ func (s *AIService) CreateSession() http.HandlerFunc {
 			if json.Unmarshal(personal.ToolPermissions, &toolPolicy) == nil {
 				allowWriteTools = toolPolicy.Write
 			}
+			reasoningEffort = personal.ReasoningEffort
 			systemPrompt = "You are " + personal.Name + ". Follow these owner-provided instructions:\n" + personal.Instructions
 			if body.SpaceID != "" {
 				contextText, contextErr := s.database.PersonalAgentSpaceContext(r.Context(), userID, body.SpaceID, personal.ContextPermissions)
@@ -153,8 +158,14 @@ func (s *AIService) CreateSession() http.HandlerFunc {
 			return
 		}
 		allowTools = agent.GatewayModelSupportsTools(r.Context(), body.ModelID)
+		if requestedReasoningEffort != "" {
+			reasoningEffort = requestedReasoningEffort
+		}
 		session := s.runtime.CreateSessionWithModel(userID, userID, body.ModelID)
 		_ = s.runtime.ConfigureSession(session.ID, userID, systemPrompt, allowTools, allowWriteTools)
+		if reasoningEffort != "" {
+			_ = s.runtime.SetSessionReasoningEffort(session.ID, userID, reasoningEffort)
+		}
 		if err := s.database.BindAgentSessionContext(r.Context(), userID, session.ID, body.AgentID, body.SpaceID, body.ModelID, agent.GatewayModelCatalogVersion); err != nil {
 			writeAIError(w, err)
 			return
