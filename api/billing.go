@@ -56,7 +56,6 @@ func CreateCheckoutSession(database *db.Database) http.HandlerFunc {
 }
 
 func CreateCreditCheckoutSession(database *db.Database) http.HandlerFunc {
-	service := appbilling.NewService(database)
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, err := sessionUserID(r, database)
 		if err != nil {
@@ -67,22 +66,7 @@ func CreateCreditCheckoutSession(database *db.Database) http.HandlerFunc {
 			http.Error(w, "not authenticated", http.StatusUnauthorized)
 			return
 		}
-		var body struct {
-			PackID string `json:"pack_id"`
-		}
-		if err := decodeJSON(w, r, &body); err != nil {
-			http.Error(w, "invalid request", http.StatusBadRequest)
-			return
-		}
-		url, err := service.CreateCreditCheckoutSession(userID, body.PackID)
-		switch {
-		case errors.Is(err, appbilling.ErrInvalidCreditPack):
-			http.Error(w, "invalid credit pack", http.StatusBadRequest)
-		case err != nil:
-			http.Error(w, "internal error", http.StatusInternalServerError)
-		default:
-			writeJSON(w, http.StatusOK, map[string]string{"url": url})
-		}
+		writeJSON(w, http.StatusGone, map[string]any{"code": "retired_product", "message": "Hosted AI add-ons are no longer sold."})
 	}
 }
 
@@ -127,26 +111,33 @@ func GetBillingUsage(database *db.Database) http.HandlerFunc {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		wallet, err := database.GetOrCreateCreditWallet(userID, license.Tier, time.Now())
+		wallet, err := database.GetOrCreateHostedAIWallet(userID, license.Tier, time.Now())
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		usage, err := database.CreditUsageByMeter(userID, wallet.AllowanceResetAt.AddDate(0, -1, 0))
+		storage, err := database.OwnerStorageUsage(r.Context(), userID)
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"plan": license.Tier, "monthly_allowance": wallet.MonthlyAllowance,
-			"monthly_remaining": wallet.MonthlyRemaining, "purchased_remaining": wallet.PurchasedRemaining,
-			"available_credits": wallet.Available(), "reserved_credits": wallet.ReservedCredits,
-			"next_reset_at": wallet.AllowanceResetAt, "usage_by_meter": usage})
+		payload := map[string]any{"plan": db.NormalizePlan(license.Tier), "storage": storage,
+			"hosted_ai": map[string]any{"used_ratio": wallet.UsedRatio(), "reset_at": wallet.ResetAt}}
+		if subscription, subscriptionErr := database.GetStripeSubscriptionByUserID(userID); subscriptionErr != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		} else if subscription != nil {
+			payload["subscription"] = map[string]any{"status": subscription.Status, "current_period_end": subscription.CurrentPeriodEnd,
+				"cancel_at_period_end": subscription.CancelAtPeriodEnd, "billing_interval": subscription.BillingInterval}
+		}
+		if license.Status == db.LicenseStatusTrialing {
+			payload["trial"] = map[string]any{"status": license.Status, "ends_at": license.ExpiresAt}
+		}
+		writeJSON(w, http.StatusOK, payload)
 	}
 }
 
 func StartPersonalTrial(database *db.Database) http.HandlerFunc {
-	service := appbilling.NewService(database)
-
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, err := sessionUserID(r, database)
 		if err != nil {
@@ -158,23 +149,6 @@ func StartPersonalTrial(database *db.Database) http.HandlerFunc {
 			return
 		}
 
-		updatedLicense, err := service.StartProTrial(userID)
-		switch {
-		case errors.Is(err, appbilling.ErrLicenseNotFound):
-			http.Error(w, "license not found", http.StatusInternalServerError)
-			return
-		case errors.Is(err, appbilling.ErrTrialUnavailable):
-			http.Error(w, "trial unavailable", http.StatusConflict)
-			return
-		case err != nil:
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-
-		writeJSON(w, http.StatusOK, map[string]any{
-			"tier":       string(updatedLicense.Tier),
-			"status":     updatedLicense.Status,
-			"expires_at": updatedLicense.ExpiresAt,
-		})
+		writeJSON(w, http.StatusGone, map[string]any{"code": "trial_checkout_required", "message": "Start the 14-day Pro trial through checkout."})
 	}
 }

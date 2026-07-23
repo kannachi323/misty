@@ -1,69 +1,98 @@
 package db
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
 
-func TestCreditWalletReservationSettlementAndReset(t *testing.T) {
+func TestHostedAIWalletReservationSettlementAndWeeklyReset(t *testing.T) {
 	database := openTestDatabase(t)
-	user, err := database.CreateUser("Credit User", "credits@example.com", "password123")
+	user, err := database.CreateUser("Hosted AI User", "hosted-ai@example.com", "password123")
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
-	wallet, err := database.GetOrCreateCreditWallet(user.ID, TierBasic, now)
+	wallet, err := database.GetOrCreateHostedAIWallet(user.ID, TierBasic, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if wallet.MonthlyRemaining != 100_000 {
-		t.Fatalf("basic wallet = %#v", wallet)
+	if wallet.WeeklyAllowanceMicrousd != FreeWeeklyHostedAIAllowance || wallet.WeeklyRemainingMicrousd != FreeWeeklyHostedAIAllowance {
+		t.Fatalf("free wallet = %#v", wallet)
 	}
-	reservation, _, err := database.ReserveCredits(user.ID, TierBasic, CreditMeterAssistantAI, "request-1", 20_000, now)
+	reservation, wallet, err := database.ReserveHostedAIUsage(user.ID, TierBasic, HostedAIMeterAssistant, "request-1", 20_000, now)
+	if err != nil || wallet.ReservedMicrousd != 20_000 {
+		t.Fatalf("reservation = %#v, wallet = %#v, err = %v", reservation, wallet, err)
+	}
+	replayed, replayWallet, err := database.ReserveHostedAIUsage(user.ID, TierBasic, HostedAIMeterAssistant, "request-1", 20_000, now)
+	if err != nil || replayed.ID != reservation.ID || replayWallet.ReservedMicrousd != 20_000 {
+		t.Fatalf("idempotent reservation = %#v, wallet = %#v, err = %v", replayed, replayWallet, err)
+	}
+	wallet, err = database.SettleHostedAIReservation(reservation.ID, "settle-1", HostedAIUsage{Provider: "test", Model: "automatic", ChargeMicrousd: 7_000})
 	if err != nil {
 		t.Fatal(err)
 	}
-	wallet, err = database.SettleCreditReservation(reservation.ID, "settle-1", CreditUsage{Provider: "openai", Model: "test", InputTokens: 10, OutputTokens: 10, Credits: 7_000})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if wallet.MonthlyRemaining != 93_000 || wallet.ReservedCredits != 0 {
+	if wallet.WeeklyRemainingMicrousd != FreeWeeklyHostedAIAllowance-7_000 || wallet.ReservedMicrousd != 0 {
 		t.Fatalf("settled wallet = %#v", wallet)
 	}
-	if err := database.AddPurchasedCredits(user.ID, "credits_1500", "purchase-1", 1_500_000); err != nil {
-		t.Fatal(err)
+	replayedWallet, err := database.SettleHostedAIReservation(reservation.ID, "settle-1", HostedAIUsage{Provider: "test", Model: "automatic", ChargeMicrousd: 7_000})
+	if err != nil || replayedWallet.WeeklyRemainingMicrousd != wallet.WeeklyRemainingMicrousd {
+		t.Fatalf("idempotent settlement = %#v, %v", replayedWallet, err)
 	}
-	wallet, err = database.GetOrCreateCreditWallet(user.ID, TierBasic, now)
+
+	resetAt := wallet.ResetAt
+	wallet, err = database.GetOrCreateHostedAIWallet(user.ID, TierBasic, resetAt.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if wallet.PurchasedRemaining != 1_500_000 {
-		t.Fatalf("purchased wallet = %#v", wallet)
+	if wallet.WeeklyRemainingMicrousd != FreeWeeklyHostedAIAllowance || !wallet.ResetAt.After(resetAt) {
+		t.Fatalf("weekly reset wallet = %#v", wallet)
 	}
-	purchase := CreditPurchase{UserID: user.ID, StripeCheckoutSessionID: "cs_credit", StripePaymentIntentID: "pi_credit", PackID: "credits_1500", Credits: 1_500_000, Status: "completed"}
-	if err := database.RecordCreditPurchase(purchase); err != nil {
-		t.Fatal(err)
-	}
-	storedPurchase, err := database.GetCreditPurchaseByPaymentIntent("pi_credit")
-	if err != nil || storedPurchase == nil {
-		t.Fatalf("credit purchase = %#v, %v", storedPurchase, err)
-	}
-	if err := database.RefundCreditPurchase(storedPurchase); err != nil {
-		t.Fatal(err)
-	}
-	wallet, err = database.GetOrCreateCreditWallet(user.ID, TierBasic, now)
-	if err != nil || wallet.PurchasedRemaining != 0 {
-		t.Fatalf("refunded wallet = %#v, %v", wallet, err)
-	}
-	if err := database.AddPurchasedCredits(user.ID, "credits_1500", "purchase-2", 1_500_000); err != nil {
-		t.Fatal(err)
-	}
-	wallet, err = database.GetOrCreateCreditWallet(user.ID, TierBasic, now.AddDate(0, 2, 0))
+}
+
+func TestHostedAIPlanChangePreservesConsumedUsage(t *testing.T) {
+	database := openTestDatabase(t)
+	user, err := database.CreateUser("Plan Change User", "plan-change@example.com", "password123")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if wallet.MonthlyRemaining != 100_000 || wallet.PurchasedRemaining != 1_500_000 {
-		t.Fatalf("reset wallet = %#v", wallet)
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	reservation, _, err := database.ReserveHostedAIUsage(user.ID, TierBasic, HostedAIMeterAssistant, "request", 20_000, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = database.SettleHostedAIReservation(reservation.ID, "settle", HostedAIUsage{ChargeMicrousd: 20_000}); err != nil {
+		t.Fatal(err)
+	}
+	wallet, err := database.GetOrCreateHostedAIWallet(user.ID, TierPro, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wallet.WeeklyAllowanceMicrousd != ProWeeklyHostedAIAllowance || wallet.WeeklyRemainingMicrousd != ProWeeklyHostedAIAllowance-20_000 {
+		t.Fatalf("upgrade restored consumed usage: %#v", wallet)
+	}
+	wallet, err = database.GetOrCreateHostedAIWallet(user.ID, TierBasic, now.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wallet.WeeklyRemainingMicrousd != FreeWeeklyHostedAIAllowance-20_000 {
+		t.Fatalf("downgrade changed consumed usage: %#v", wallet)
+	}
+}
+
+func TestHostedAILimitAndRetiredPurchases(t *testing.T) {
+	database := openTestDatabase(t)
+	user, err := database.CreateUser("Limit User", "limit@example.com", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = database.ReserveHostedAIUsage(user.ID, TierBasic, HostedAIMeterAssistant, "too-large", FreeWeeklyHostedAIAllowance+1, time.Now())
+	var limit HostedAILimitReachedError
+	if !errors.As(err, &limit) {
+		t.Fatalf("limit error = %v", err)
+	}
+	if err := database.AddPurchasedCredits(user.ID, "retired", "purchase", 1); !errors.Is(err, ErrCreditPurchasesRetired) {
+		t.Fatalf("retired purchase error = %v", err)
 	}
 }
 
@@ -86,8 +115,8 @@ func TestSubscriptionFallsBackToGrandfatheredTier(t *testing.T) {
 		t.Fatal(err)
 	}
 	license, _ := database.GetLicenseByUserID(user.ID)
-	if license == nil || license.Tier != TierMax {
-		t.Fatalf("active subscription license = %#v", license)
+	if license == nil || license.Tier != TierPro {
+		t.Fatalf("legacy Max subscription was not normalized: %#v", license)
 	}
 	subscription.Status = "canceled"
 	if err := database.UpsertStripeSubscription(subscription); err != nil {
@@ -99,40 +128,5 @@ func TestSubscriptionFallsBackToGrandfatheredTier(t *testing.T) {
 	license, _ = database.GetLicenseByUserID(user.ID)
 	if license == nil || license.Tier != TierPro {
 		t.Fatalf("fallback license = %#v", license)
-	}
-}
-
-func TestStartSubscriptionCreditPeriodIsIdempotent(t *testing.T) {
-	database := openTestDatabase(t)
-	user, err := database.CreateUser("Subscription Credit User", "subscription-credits@example.com", "password123")
-	if err != nil {
-		t.Fatal(err)
-	}
-	activatedAt := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
-	wallet, err := database.StartSubscriptionCreditPeriod(user.ID, TierPro, activatedAt, "sub_test:activation")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if wallet.MonthlyAllowance != 2_000_000 || wallet.MonthlyRemaining != 2_000_000 {
-		t.Fatalf("initial subscription wallet = %#v", wallet)
-	}
-
-	reservation, _, err := database.ReserveCredits(user.ID, TierPro, CreditMeterAssistantAI, "subscription-request", 20_000, activatedAt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.SettleCreditReservation(reservation.ID, "subscription-settlement", CreditUsage{Credits: 20_000}); err != nil {
-		t.Fatal(err)
-	}
-
-	wallet, err = database.StartSubscriptionCreditPeriod(user.ID, TierPro, activatedAt.Add(time.Hour), "sub_test:activation")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if wallet.MonthlyRemaining != 1_980_000 {
-		t.Fatalf("replayed subscription grant refilled wallet: %#v", wallet)
-	}
-	if !wallet.AllowanceResetAt.Equal(activatedAt.AddDate(0, 1, 0)) {
-		t.Fatalf("replayed subscription grant changed reset date: %s", wallet.AllowanceResetAt)
 	}
 }

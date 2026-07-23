@@ -8,11 +8,11 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/kannachi323/misty/server/api"
 	"github.com/kannachi323/misty/server/billing"
-	"github.com/kannachi323/misty/server/db"
 	"github.com/kannachi323/misty/server/telemetry"
 )
 
@@ -72,10 +72,15 @@ func TestStripeTelemetryIsConsentAwareAndDeduplicated(t *testing.T) {
 		t.Fatalf("enable analytics: %v", err)
 	}
 
-	sessionID, paymentIntentID := "cs_"+uuid.NewString(), "pi_"+uuid.NewString()
-	event := checkoutEventObject(user, db.TierPersonal, sessionID, paymentIntentID, "cus_"+uuid.NewString())
+	t.Setenv("STRIPE_PRICE_PRO_MONTHLY", "price_pro")
+	event := map[string]any{
+		"id": "sub_" + uuid.NewString(), "customer": "cus_" + uuid.NewString(), "status": "active",
+		"current_period_end": time.Now().Add(30 * 24 * time.Hour).Unix(),
+		"metadata":           map[string]string{"user_id": user.ID, "license_id": user.LicenseID, "tier": "pro", "interval": "month"},
+		"items":              map[string]any{"data": []any{map[string]any{"price": map[string]any{"id": "price_pro", "recurring": map[string]any{"interval": "month"}}}}},
+	}
 	for index := 0; index < 2; index++ {
-		if recorder := sendSignedStripeWebhook(t, handler, secret, "checkout.session.completed", event); recorder.Code != http.StatusOK {
+		if recorder := sendSignedStripeWebhook(t, handler, secret, "customer.subscription.updated", event); recorder.Code != http.StatusOK {
 			t.Fatalf("webhook %d status=%d", index, recorder.Code)
 		}
 	}

@@ -17,6 +17,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	serveragent "github.com/kannachi323/misty/server/agent"
+	appbilling "github.com/kannachi323/misty/server/billing"
 	"github.com/kannachi323/misty/server/db"
 )
 
@@ -105,7 +106,7 @@ func (s *SmartLibraryService) Preflight() http.HandlerFunc {
 		if !s.writeFolderError(w, err) {
 			return
 		}
-		writeJSON(w, 200, map[string]any{"estimate": estimate(folder)})
+		writeJSON(w, 200, map[string]any{"estimate": s.estimate(userID, folder)})
 	}
 }
 
@@ -135,7 +136,7 @@ func (s *SmartLibraryService) CreateSample() http.HandlerFunc {
 			return
 		}
 		folder, _ := s.database.SmartLibraryFolder(userID, folderID)
-		writeJSON(w, 200, map[string]any{"assetIds": ids, "estimate": estimate(folder)})
+		writeJSON(w, 200, map[string]any{"assetIds": ids, "estimate": s.estimate(userID, folder)})
 	}
 }
 
@@ -146,11 +147,11 @@ func (s *SmartLibraryService) Approve(kind string) http.HandlerFunc {
 			return
 		}
 		if strings.EqualFold(strings.TrimSpace(os.Getenv("SMART_LIBRARY_EMERGENCY_DISABLE")), "true") {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "smart_library_disabled", "message": "Mika image analysis is temporarily disabled. No images were charged."})
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "smart_library_disabled", "message": "Image analysis is temporarily disabled. Weekly usage was not charged."})
 			return
 		}
 		if s.analyzer == nil || strings.TrimSpace(s.analyzer.APIKey) == "" {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "smart_library_unavailable", "message": "Mika image analysis is not configured. No images were charged."})
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "smart_library_unavailable", "message": "Image analysis is not configured. Weekly usage was not charged."})
 			return
 		}
 		var body smartLibraryApproval
@@ -196,28 +197,31 @@ func (s *SmartLibraryService) Approve(kind string) http.HandlerFunc {
 			return
 		}
 		var reservation *db.CreditReservation
-		if kind != "sample" {
-			tier := db.TierBasic
-			license, licenseErr := s.database.GetLicenseByUserID(userID)
-			if licenseErr != nil {
-				_ = s.database.ResetSmartLibraryBatch(batch.ID)
-				http.Error(w, "internal error", 500)
-				return
-			}
-			if license != nil {
-				tier = license.Tier
-			}
-			reservation, _, err = s.database.ReserveCredits(userID, tier, db.CreditMeterAssetAnalysisImage, "smart-library:"+batch.ID, int64(len(assets))*db.CreditDenominationScale, time.Now())
-			if err != nil {
-				_ = s.database.ResetSmartLibraryBatch(batch.ID)
-				var insufficient db.InsufficientCreditsError
-				if errors.As(err, &insufficient) {
-					writeJSON(w, http.StatusPaymentRequired, map[string]any{"code": "insufficient_credits", "message": "Not enough Mika credits to analyze this batch.", "requiredCredits": insufficient.Required / db.CreditDenominationScale, "availableCredits": insufficient.Available / db.CreditDenominationScale})
-					return
+		tier := db.TierBasic
+		license, licenseErr := s.database.GetLicenseByUserID(userID)
+		if licenseErr != nil {
+			_ = s.database.ResetSmartLibraryBatch(batch.ID)
+			http.Error(w, "internal error", 500)
+			return
+		}
+		if license != nil {
+			tier = license.Tier
+		}
+		var usageWallet *db.CreditWallet
+		reservation, usageWallet, err = s.database.ReserveCredits(userID, tier, db.CreditMeterAssetAnalysisImage, "smart-library:"+batch.ID, appbilling.EstimateSmartLibraryCharge(len(assets)), time.Now())
+		if err != nil {
+			_ = s.database.ResetSmartLibraryBatch(batch.ID)
+			var insufficient db.HostedAILimitReachedError
+			if errors.As(err, &insufficient) {
+				response := map[string]any{"code": "hosted_ai_limit_reached", "message": "Weekly hosted AI usage is fully used."}
+				if usageWallet != nil {
+					response["reset_at"] = usageWallet.ResetAt
 				}
-				http.Error(w, "internal error", 500)
+				writeJSON(w, http.StatusPaymentRequired, response)
 				return
 			}
+			http.Error(w, "internal error", 500)
+			return
 		}
 		analysis, analysisErr := s.analyzer.Analyze(r.Context(), assets)
 		failures := analysis.Failures
@@ -276,10 +280,13 @@ func (s *SmartLibraryService) Approve(kind string) http.HandlerFunc {
 		if reservation != nil {
 			if len(completions) == 0 {
 				_ = s.database.ReleaseCreditReservation(reservation.ID)
-			} else if _, err = s.database.SettleCreditReservation(reservation.ID, "smart-library-settle:"+batch.ID, db.CreditUsage{Provider: "vercel_ai_gateway", Model: "smart-library-routing", InputTokens: analysis.Usage.InputTokens, CachedInputTokens: analysis.Usage.CachedInputTokens, OutputTokens: analysis.Usage.OutputTokens, Credits: int64(len(completions)) * db.CreditDenominationScale}); err != nil {
-				_ = s.database.ReleaseCreditReservation(reservation.ID)
-				http.Error(w, "internal error", 500)
-				return
+			} else {
+				charge := appbilling.SmartLibraryCharge(analysis.Usage, embeddingCount)
+				if _, err = s.database.SettleCreditReservation(reservation.ID, "smart-library-settle:"+batch.ID, db.CreditUsage{Provider: "vercel_ai_gateway", Model: "smart-library-routing", InputTokens: analysis.Usage.InputTokens, CachedInputTokens: analysis.Usage.CachedInputTokens, OutputTokens: analysis.Usage.OutputTokens, ProviderCost: appbilling.SmartLibraryProviderCost(analysis.Usage, embeddingCount), ChargeMicrousd: charge}); err != nil {
+					_ = s.database.ReleaseCreditReservation(reservation.ID)
+					http.Error(w, "internal error", 500)
+					return
+				}
 			}
 		}
 		batch.Status = "completed"
@@ -290,7 +297,7 @@ func (s *SmartLibraryService) Approve(kind string) http.HandlerFunc {
 		}
 		batch.SuccessfulImages = len(completions)
 		batch.FailedImages = len(failures)
-		writeJSON(w, http.StatusOK, progressPayload(folder, []db.SmartLibraryBatch{*batch}))
+		writeJSON(w, http.StatusOK, progressPayload(folder, []db.SmartLibraryBatch{*batch}, s.estimate(userID, folder)))
 	}
 }
 
@@ -318,7 +325,7 @@ func (s *SmartLibraryService) Progress() http.HandlerFunc {
 			http.Error(w, "internal error", 500)
 			return
 		}
-		payload := progressPayload(folder, batches)
+		payload := progressPayload(folder, batches, s.estimate(userID, folder))
 		sampleAssetIDs, err := s.database.SmartLibrarySampleAssetIDs(userID, folder.ID)
 		if err != nil {
 			http.Error(w, "internal error", 500)
@@ -418,7 +425,7 @@ func (s *SmartLibraryService) Rescan() http.HandlerFunc {
 		if !s.writeFolderError(w, err) {
 			return
 		}
-		writeJSON(w, 200, map[string]any{"estimate": estimate(folder)})
+		writeJSON(w, 200, map[string]any{"estimate": s.estimate(userID, folder)})
 	}
 }
 
@@ -455,10 +462,14 @@ func (s *SmartLibraryService) searchHandler(folderFromPath bool) http.HandlerFun
 			folderID = chi.URLParam(r, "folderID")
 		}
 		var vector []float64
+		var semanticOperation *hostedSemanticQueryOperation
 		semanticAvailable := false
 		if s.analyzer != nil && strings.TrimSpace(s.analyzer.APIKey) != "" && !strings.EqualFold(strings.TrimSpace(os.Getenv("SMART_LIBRARY_SEARCH_EMERGENCY_DISABLE")), "true") {
 			var embedErr error
-			vector, embedErr = s.cachedQueryEmbedding(r.Context(), userID, body.Query)
+			vector, semanticOperation, embedErr = s.cachedQueryEmbedding(r.Context(), userID, body.Query)
+			if semanticOperation != nil {
+				defer semanticOperation.Release(s.database)
+			}
 			if errors.Is(embedErr, errSemanticSearchRateLimited) {
 				writeJSON(w, http.StatusTooManyRequests, map[string]any{"code": "semantic_search_rate_limited", "message": "Too many new semantic searches. Try again shortly."})
 				return
@@ -468,6 +479,12 @@ func (s *SmartLibraryService) searchHandler(folderFromPath bool) http.HandlerFun
 		hits, err := s.database.SearchSmartLibraryHybrid(userID, folderID, body.Query, vector, min(max(body.Limit, 1), 50))
 		if !s.writeFolderError(w, err) {
 			return
+		}
+		if semanticOperation != nil {
+			if err := semanticOperation.Settle(s.database); err != nil {
+				http.Error(w, "internal error", 500)
+				return
+			}
 		}
 		writeJSON(w, 200, map[string]any{"hits": hits, "queryModel": semanticModelName(s.analyzer, semanticAvailable), "indexVersion": serveragent.SmartLibraryIndexVersion, "semanticAvailable": semanticAvailable})
 	}
@@ -534,7 +551,7 @@ func (s *SmartLibraryService) PlanReindex() http.HandlerFunc {
 		for _, asset := range job.Assets {
 			assets = append(assets, map[string]any{"assetId": asset.AssetID, "folderId": asset.FolderID, "fingerprint": asset.Fingerprint, "assetKind": asset.AssetKind, "mimeType": asset.MimeType, "requiresPreview": asset.RequiresPreview})
 		}
-		writeJSON(w, http.StatusCreated, map[string]any{"jobId": job.ID, "status": job.Status, "targetVersion": job.Version, "embeddingModel": job.Model, "nextCursor": job.Cursor, "assets": assets, "credits": 0})
+		writeJSON(w, http.StatusCreated, map[string]any{"jobId": job.ID, "status": job.Status, "targetVersion": job.Version, "embeddingModel": job.Model, "nextCursor": job.Cursor, "assets": assets, "hostedAIWeeklyRatio": s.hostedAIWeeklyRatio(userID, appbilling.EstimateSmartLibraryCharge(len(job.Assets)))})
 	}
 }
 
@@ -596,8 +613,44 @@ func (s *SmartLibraryService) CompleteReindex() http.HandlerFunc {
 			http.Error(w, "preview batch too large", http.StatusRequestEntityTooLarge)
 			return
 		}
+		tier := db.TierBasic
+		license, licenseErr := s.database.GetLicenseByUserID(userID)
+		if licenseErr != nil {
+			http.Error(w, "internal error", 500)
+			return
+		}
+		if license != nil {
+			tier = license.Tier
+		}
+		requestPayload, _ := json.Marshal(body.Assets)
+		requestDigest := sha256.Sum256(requestPayload)
+		requestKey := "smart-library-reindex:" + chi.URLParam(r, "jobID") + ":" + base64.RawURLEncoding.EncodeToString(requestDigest[:])
+		reservation, usageWallet, err := s.database.ReserveCredits(userID, tier, db.CreditMeterAssetAnalysisImage, requestKey, appbilling.EstimateSmartLibraryCharge(len(inputs)), time.Now())
+		if err != nil {
+			var insufficient db.HostedAILimitReachedError
+			if errors.As(err, &insufficient) {
+				response := map[string]any{"code": "hosted_ai_limit_reached", "message": "Weekly hosted AI usage is fully used."}
+				if usageWallet != nil {
+					response["reset_at"] = usageWallet.ResetAt
+				}
+				writeJSON(w, http.StatusPaymentRequired, response)
+				return
+			}
+			http.Error(w, "internal error", 500)
+			return
+		}
+		settled := false
+		defer func() {
+			if !settled && reservation != nil {
+				_ = s.database.ReleaseCreditReservation(reservation.ID)
+			}
+		}()
 		job, records, err := s.database.SmartLibraryReindexRecords(userID, chi.URLParam(r, "jobID"), refs)
 		if !s.writeFolderError(w, err) {
+			return
+		}
+		if len(records) == 0 {
+			writeJSON(w, 200, map[string]any{"jobId": job.ID, "status": job.Status, "completedAssets": job.Completed, "failedAssets": job.Failed, "failures": map[string]string{}})
 			return
 		}
 		inputByID := map[string]serveragent.SmartLibraryAsset{}
@@ -621,8 +674,13 @@ func (s *SmartLibraryService) CompleteReindex() http.HandlerFunc {
 			}
 		}
 		refreshedMetadata := map[string]serveragent.SmartLibraryMetadata{}
+		var totalUsage serveragent.ModelUsage
+		embeddingCount := 0
 		for folderID, refreshInputs := range refreshByFolder {
 			analysis, analyzeErr := s.analyzer.Analyze(r.Context(), refreshInputs)
+			totalUsage.InputTokens += analysis.Usage.InputTokens
+			totalUsage.CachedInputTokens += analysis.Usage.CachedInputTokens
+			totalUsage.OutputTokens += analysis.Usage.OutputTokens
 			model := "smart-library-metadata-refresh"
 			if len(analysis.Results) > 0 && analysis.Results[0].Model != "" {
 				model = analysis.Results[0].Model
@@ -649,11 +707,15 @@ func (s *SmartLibraryService) CompleteReindex() http.HandlerFunc {
 				}
 			}
 			embeddings, usage, embedErr := s.analyzer.EmbedAssets(r.Context(), []serveragent.SmartLibraryAsset{input}, map[string]serveragent.SmartLibraryMetadata{input.AssetID: metadata})
+			totalUsage.InputTokens += usage.InputTokens
+			totalUsage.CachedInputTokens += usage.CachedInputTokens
+			totalUsage.OutputTokens += usage.OutputTokens
 			_ = s.database.RecordSmartLibrarySemanticUsage(userID, record.FolderID, "reindex", currentEmbeddingModel(), 1, usage.InputTokens, 0, embedErr == nil)
 			if embedErr != nil || len(embeddings) != 1 {
 				failures[key] = "embedding_failed"
 				continue
 			}
+			embeddingCount++
 			completion := db.SmartLibraryCompletion{AssetID: record.AssetID, Embedding: embeddings[0].Vector, EmbeddingInputHash: embeddings[0].InputHash}
 			if metadataRefreshed {
 				completion.Description = metadata.Description
@@ -671,6 +733,14 @@ func (s *SmartLibraryService) CompleteReindex() http.HandlerFunc {
 			if !s.writeFolderError(w, err) {
 				return
 			}
+		}
+		if len(completions) > 0 {
+			charge := appbilling.SmartLibraryCharge(totalUsage, embeddingCount)
+			if _, err = s.database.SettleCreditReservation(reservation.ID, "smart-library-reindex-settle:"+requestKey, db.CreditUsage{Provider: "vercel_ai_gateway", Model: "smart-library-reindex", InputTokens: totalUsage.InputTokens, CachedInputTokens: totalUsage.CachedInputTokens, OutputTokens: totalUsage.OutputTokens, ProviderCost: appbilling.SmartLibraryProviderCost(totalUsage, embeddingCount), ChargeMicrousd: charge}); err != nil {
+				http.Error(w, "internal error", 500)
+				return
+			}
+			settled = true
 		}
 		writeJSON(w, 200, map[string]any{"jobId": job.ID, "status": job.Status, "completedAssets": job.Completed, "failedAssets": job.Failed, "failures": failures})
 	}
@@ -703,29 +773,25 @@ func (s *SmartLibraryService) writeFolderError(w http.ResponseWriter, err error)
 }
 
 func allowance(folder *db.SmartLibraryFolder) map[string]any {
-	return map[string]any{"sampleImages": smartLibrarySampleSize, "maximumAnalyzedImages": smartLibraryLimit, "sampleIncluded": true, "remainingImages": max(0, smartLibraryLimit-folder.SuccessfulImages)}
+	return map[string]any{"sampleImages": smartLibrarySampleSize, "maximumAnalyzedImages": smartLibraryLimit, "sampleIncluded": false, "remainingImages": max(0, smartLibraryLimit-folder.SuccessfulImages)}
 }
-func estimate(folder *db.SmartLibraryFolder) map[string]any {
+func (s *SmartLibraryService) estimate(userID string, folder *db.SmartLibraryFolder) map[string]any {
 	if folder == nil {
 		return map[string]any{}
 	}
-	var price any = nil
-	if raw := strings.TrimSpace(os.Getenv("SMART_LIBRARY_PRICE_MINOR_PER_IMAGE")); raw != "" {
-		if unit, err := strconv.ParseInt(raw, 10, 64); err == nil && unit >= 0 {
-			price = unit * int64(folder.BillableImages)
-		}
-	}
-	return map[string]any{"eligibleImages": folder.EligibleImages, "includedImages": folder.IncludedImages, "billableImages": folder.BillableImages, "creditUnits": folder.BillableImages, "priceMinor": price, "currency": nullableCurrency(price)}
+	return map[string]any{"eligibleImages": folder.EligibleImages, "includedImages": folder.IncludedImages, "billableImages": folder.BillableImages, "hostedAIWeeklyRatio": s.hostedAIWeeklyRatio(userID, appbilling.EstimateSmartLibraryCharge(folder.BillableImages))}
 }
-func nullableCurrency(price any) any {
-	if price == nil {
-		return nil
+
+func (s *SmartLibraryService) hostedAIWeeklyRatio(userID string, estimatedCharge int64) float64 {
+	tier := db.TierBasic
+	if license, err := s.database.GetLicenseByUserID(userID); err == nil && license != nil {
+		tier = license.Tier
 	}
-	currency := strings.ToUpper(strings.TrimSpace(os.Getenv("SMART_LIBRARY_PRICE_CURRENCY")))
-	if currency == "" {
-		currency = "USD"
+	allowance := db.EntitlementsForTier(tier).WeeklyHostedAIAllowance
+	if allowance <= 0 || estimatedCharge <= 0 {
+		return 0
 	}
-	return currency
+	return float64(estimatedCharge) / float64(allowance)
 }
 func validOpaqueID(value, prefix string) bool {
 	return strings.HasPrefix(value, prefix) && len(value) <= 96 && !strings.ContainsAny(value, "/\\ \t\r\n")
@@ -782,7 +848,7 @@ func min(values ...int) int {
 	}
 	return result
 }
-func progressPayload(folder *db.SmartLibraryFolder, batches []db.SmartLibraryBatch) map[string]any {
+func progressPayload(folder *db.SmartLibraryFolder, batches []db.SmartLibraryBatch, estimate map[string]any) map[string]any {
 	queued := 0
 	items := make([]map[string]any, 0, len(batches))
 	for _, batch := range batches {
@@ -792,7 +858,7 @@ func progressPayload(folder *db.SmartLibraryFolder, batches []db.SmartLibraryBat
 		}
 		items = append(items, map[string]any{"batchId": batch.ID, "assetIds": batch.AssetIDs, "status": batch.Status, "completedImages": batch.SuccessfulImages, "failedImages": batch.FailedImages})
 	}
-	return map[string]any{"folderId": folder.ID, "phase": folder.State, "successfulImages": folder.SuccessfulImages, "failedImages": folder.FailedImages, "queuedImages": queued, "batches": items, "estimate": estimate(folder), "nextResultSequence": 0, "message": nil}
+	return map[string]any{"folderId": folder.ID, "phase": folder.State, "successfulImages": folder.SuccessfulImages, "failedImages": folder.FailedImages, "queuedImages": queued, "batches": items, "estimate": estimate, "nextResultSequence": 0, "message": nil}
 }
 
 func richMetadata(value serveragent.SmartLibraryMetadata) db.SmartLibraryRichMetadata {
@@ -817,7 +883,7 @@ func semanticModelName(analyzer *serveragent.SmartLibraryAnalyzer, available boo
 	return currentEmbeddingModel()
 }
 
-func (s *SmartLibraryService) cachedQueryEmbedding(ctx context.Context, userID, query string) ([]float64, error) {
+func (s *SmartLibraryService) cachedQueryEmbedding(ctx context.Context, userID, query string) ([]float64, *hostedSemanticQueryOperation, error) {
 	normalized := strings.ToLower(strings.Join(strings.Fields(query), " "))
 	cacheKey := sha256.Sum256([]byte(userID + "\x00" + normalized))
 	userKey := sha256.Sum256([]byte(userID))
@@ -826,7 +892,7 @@ func (s *SmartLibraryService) cachedQueryEmbedding(ctx context.Context, userID, 
 	if cached, ok := s.queryCache[cacheKey]; ok && now.Before(cached.expires) {
 		vector := append([]float64(nil), cached.vector...)
 		s.searchMu.Unlock()
-		return vector, nil
+		return vector, nil, nil
 	}
 	window := s.queryWindows[userKey]
 	if window.started.IsZero() || now.Sub(window.started) >= time.Minute {
@@ -835,7 +901,7 @@ func (s *SmartLibraryService) cachedQueryEmbedding(ctx context.Context, userID, 
 	if window.count >= 30 {
 		s.queryWindows[userKey] = window
 		s.searchMu.Unlock()
-		return nil, errSemanticSearchRateLimited
+		return nil, nil, errSemanticSearchRateLimited
 	}
 	window.count++
 	s.queryWindows[userKey] = window
@@ -847,28 +913,35 @@ func (s *SmartLibraryService) cachedQueryEmbedding(ctx context.Context, userID, 
 		}
 	}
 	if count, countErr := s.database.SmartLibrarySemanticCallsToday(userID, "semantic_query"); countErr == nil && count >= dailyLimit {
-		return nil, errSemanticSearchRateLimited
+		return nil, nil, errSemanticSearchRateLimited
 	}
-	vector, usage, err := s.analyzer.EmbedQuery(ctx, normalized)
+	operation, err := beginHostedSemanticQuery(ctx, s.database, s.analyzer, userID, "smart-library-query:"+strconv.FormatInt(now.UnixNano(), 10), normalized)
+	usage := serveragent.ModelUsage{}
+	if operation != nil {
+		usage = operation.Usage
+	}
 	_ = s.database.RecordSmartLibrarySemanticUsage(userID, "", "semantic_query", currentEmbeddingModel(), 1, usage.InputTokens, 0, err == nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	s.searchMu.Lock()
-	defer s.searchMu.Unlock()
-	if len(s.queryCache) >= 256 {
-		for key, item := range s.queryCache {
-			if now.After(item.expires) {
-				delete(s.queryCache, key)
-			}
-		}
+	vector := operation.Vector
+	operation.OnSettled = func() {
+		s.searchMu.Lock()
+		defer s.searchMu.Unlock()
 		if len(s.queryCache) >= 256 {
-			for key := range s.queryCache {
-				delete(s.queryCache, key)
-				break
+			for key, item := range s.queryCache {
+				if now.After(item.expires) {
+					delete(s.queryCache, key)
+				}
+			}
+			if len(s.queryCache) >= 256 {
+				for key := range s.queryCache {
+					delete(s.queryCache, key)
+					break
+				}
 			}
 		}
+		s.queryCache[cacheKey] = cachedSemanticQuery{vector: append([]float64(nil), vector...), expires: now.Add(5 * time.Minute)}
 	}
-	s.queryCache[cacheKey] = cachedSemanticQuery{vector: append([]float64(nil), vector...), expires: now.Add(5 * time.Minute)}
-	return vector, nil
+	return vector, operation, nil
 }

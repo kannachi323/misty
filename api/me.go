@@ -1,7 +1,11 @@
 package api
 
 import (
+	"bytes"
+	"image/png"
+	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/kannachi323/misty/server/db"
@@ -97,8 +101,9 @@ func GetMe(database *db.Database) http.HandlerFunc {
 			"name":             user.Name,
 			"username":         user.Username,
 			"email":            user.Email,
+			"avatar_version":   user.AvatarVersion,
 			"created_at":       user.CreatedAt,
-			"tier":             string(license.Tier),
+			"tier":             string(db.NormalizePlan(license.Tier)),
 			"status":           license.Status,
 			"allows_use":       licenseAllowsUse(license),
 			"expires_at":       license.ExpiresAt,
@@ -107,6 +112,74 @@ func GetMe(database *db.Database) http.HandlerFunc {
 			"billing":          billingSummary,
 		})
 	}
+}
+
+const maxAvatarPNGBytes = 5 << 20
+
+func UserAvatar(database *db.Database) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, err := sessionUserID(r, database)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if userID == "" {
+			http.Error(w, "not authenticated", http.StatusUnauthorized)
+			return
+		}
+
+		switch r.Method {
+		case http.MethodGet:
+			data, version, err := database.GetUserAvatar(userID)
+			if err != nil {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			if len(data) == 0 {
+				http.Error(w, "avatar not found", http.StatusNotFound)
+				return
+			}
+			writeAvatarPNG(w, data, version)
+		case http.MethodPut:
+			data, ok := readAvatarPNG(w, r)
+			if !ok {
+				return
+			}
+			version, err := database.UpdateUserAvatar(userID, data)
+			if err != nil {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"avatar_version": version})
+		default:
+			w.Header().Set("Allow", "GET, PUT")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+func readAvatarPNG(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxAvatarPNGBytes+1)
+	data, err := io.ReadAll(r.Body)
+	if err != nil || len(data) == 0 || len(data) > maxAvatarPNGBytes {
+		http.Error(w, "PNG must be 5 MB or smaller", http.StatusRequestEntityTooLarge)
+		return nil, false
+	}
+	config, err := png.DecodeConfig(bytes.NewReader(data))
+	if err != nil || config.Width < 1 || config.Height < 1 || config.Width > 4096 || config.Height > 4096 {
+		http.Error(w, "valid PNG required", http.StatusBadRequest)
+		return nil, false
+	}
+	return data, true
+}
+
+func writeAvatarPNG(w http.ResponseWriter, data []byte, version int64) {
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.Header().Set("ETag", `"avatar-`+strconv.FormatInt(version, 10)+`"`)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func UpdateProfile(database *db.Database) http.HandlerFunc {

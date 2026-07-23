@@ -14,7 +14,7 @@ func TestTierFromMetadata(t *testing.T) {
 	}{
 		{raw: "personal", want: db.TierPro, ok: true},
 		{raw: " Pro ", want: db.TierPro, ok: true},
-		{raw: "max", want: db.TierMax, ok: true},
+		{raw: "max", want: db.TierPro, ok: true},
 		{raw: "basic", want: "", ok: false},
 	}
 
@@ -39,9 +39,9 @@ func TestSubscriptionStartTelemetryDeduplicatesCompletedCheckout(t *testing.T) {
 }
 
 func TestConfiguredSubscriptionPriceIsAuthoritative(t *testing.T) {
-	t.Setenv("STRIPE_PRICE_MAX_MONTHLY", "price_max_month")
-	tier, interval, ok := configuredSubscriptionPrice("price_max_month")
-	if !ok || tier != db.TierMax || interval != BillingIntervalMonth {
+	t.Setenv("STRIPE_PRICE_PRO_MONTHLY", "price_pro_month")
+	tier, interval, ok := configuredSubscriptionPrice("price_pro_month")
+	if !ok || tier != db.TierPro || interval != BillingIntervalMonth {
 		t.Fatalf("configured price = (%q, %q, %v)", tier, interval, ok)
 	}
 	if _, _, ok := configuredSubscriptionPrice("price_unknown"); ok {

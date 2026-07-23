@@ -1,6 +1,6 @@
 # Misty Server API
 
-The canonical Mika → Spaces → Agents → Workflows contracts, privacy model, workflow-version semantics, and endpoint index are documented in [agent-architecture.md](agent-architecture.md).
+The canonical Spaces → Agents → Workflows contracts, privacy model, workflow-version semantics, and endpoint index are documented in [agent-architecture.md](agent-architecture.md).
 
 All routes are mounted at the root path and again under `/api`, except `/stripe/webhook`, which is root-only for Stripe.
 
@@ -116,18 +116,17 @@ Body: `{ "email_updates_enabled": bool }`
 
 `POST /billing/trial/start`
 
-Starts a one-time 14-day Pro trial only when the user has an active Basic license, has not started a trial before, and has no completed purchase history.
+Retired. Returns HTTP `410` with `code: "trial_checkout_required"`; trials begin through card-required Stripe Checkout.
 
 `POST /billing/checkout-session`
 
-Body: `{ "tier": "pro" | "max", "interval": "month" | "year" }`
+Body: `{ "tier": "pro", "interval": "month" | "year" }`
 
-Returns a Stripe subscription Checkout `{ "url": string }`. Existing active subscribers must use the Customer Portal.
+Returns a Stripe subscription Checkout `{ "url": string }`. Eligible accounts receive a one-time 14-day trial; a payment method is required and the subscription auto-renews. Existing active subscribers must use the Customer Portal.
 
 `POST /billing/credit-checkout-session`
 
-Body: `{ "pack_id": "credits_1500" | "credits_3500" }`. Returns one-time Stripe Checkout `{ "url": string }`.
-The stable pack identifiers grant 1,500,000 and 3,500,000 micro-credits respectively; their names are retained for API and Stripe metadata compatibility.
+Retired. Returns HTTP `410` with `code: "retired_product"`. Misty has no hosted-AI add-ons or automatic overages.
 
 `POST /billing/portal-session`
 
@@ -135,22 +134,20 @@ Returns a Stripe Customer Portal `{ "url": string }` for an authenticated Stripe
 
 `GET /billing/usage`
 
-Returns the current plan, monthly allowance and balance, purchased balance, reserved balance, next reset, total available credits, and consumption grouped by meter.
+Returns `plan`, owner-pooled `storage` usage and limits, `hosted_ai.used_ratio` and Monday reset time, plus trial/subscription state when applicable. Internal amounts, provider rates, and ledger entries are not exposed.
 
 `POST /stripe/webhook`
 
 Stripe-signed only. Handled event types:
 
-- `checkout.session.completed`: records legacy lifetime purchases or grants a validated prepaid credit pack.
-- `customer.subscription.created|updated|deleted`: persists canonical subscription state and recomputes the effective tier, preserving lifetime fallback rights.
-- `charge.refunded`: marks the purchase refunded and downgrades the license to active basic.
-- `charge.dispute.created`: marks the purchase disputed and downgrades the license to active basic.
+- `checkout.session.completed`: acknowledges Pro subscription Checkout; retired one-time products are ignored.
+- `customer.subscription.created|updated|deleted`: persists canonical state and grants Pro while active or trialing, including through cancellation's effective end.
 
-Replay behavior: repeated checkout completion is idempotent. A checkout completion replay after a refund or dispute is ignored so it cannot reactivate a paid tier.
+Replay behavior is idempotent. Subscription state is derived from the latest Stripe event and period end.
 
 `POST /ai/complete`
 
-Authenticated managed completion used by AI automation nodes. It consumes the shared `automation_ai` credit meter and returns `text`, the public Mika `model`, `credits_used`, and `credits_remaining`. Managed AI endpoints return structured HTTP `402` with `code: "credits_exhausted"` when a reservation cannot be funded.
+Authenticated managed completion used by AI automation nodes. It consumes the requesting member's shared weekly hosted-AI pool and returns `text`, automatic-routing metadata, `hosted_ai_used_ratio`, and `hosted_ai_reset_at`. Managed AI endpoints return structured HTTP `402` with `code: "hosted_ai_limit_reached"` when a reservation cannot be funded.
 
 ## Waitlist
 
@@ -172,14 +169,16 @@ never queued or retried automatically. Cancellation returns
 
 `GET /ai/status`
 
-Returns provider-neutral Mika status and a static running state. `provider` is
-always `misty`; `model` is the subscription-selected `mika-low`, `mika-med`, or
-`mika-high`; and `model_name` is the corresponding display name. Concrete AI
-provider and model identifiers are never exposed by public AI endpoints.
+Returns provider-neutral agent status and a static running state. `provider` is
+always `misty`; `model` is `automatic`; and `model_name` is `Automatic`.
+
+`GET /ai/models`
+
+Returns the server-controlled, chat-capable gateway model catalog and its catalog version. The same catalog is available on Free and Pro. Provider prices and internal rate-card data are never returned.
 
 `POST /ai/sessions`
 
-Creates an in-memory agent session and returns `{ "session_id": string }`.
+Body may include `agent_id`, `space_id`, and `model_id`. Creates a resumable agent session and returns its session ID plus the bound Agent, Space, model, and catalog version. A pinned model that is no longer in the catalog returns `agent_model_unavailable`; Misty never silently substitutes it.
 
 `POST /ai/sessions/{sessionID}/messages`
 
@@ -196,6 +195,26 @@ Body: `{ "results": [{ "request_id": string, "name": string, "ok": bool, "result
 `POST /ai/sessions/{sessionID}/cancel`
 
 Cancels an active session.
+
+## Personal Agents
+
+All Personal Agent routes require authentication. Agent configuration and grant management are owner-only.
+
+- `GET|POST /agents`
+- `GET|PATCH|DELETE /agents/{agentID}`
+- `GET|PUT /agents/{agentID}/space-grants`
+- `GET /spaces/{spaceID}/chat-agents` returns the requester's enabled Agents plus presentation-only records for Agents granted in that Space
+
+Agents are private by default. A grant can allow everyone in a Space or selected current members. Instructions, tool/context permissions, direct conversations, and memory remain private to the owner; shared invocations use memory isolated by invoker, Agent, and Space. Effective tools are intersected with the invoking member's permissions, model capabilities, and runtime safety policy.
+
+Space chat stores Agent mentions as structured spans containing `agent_id`. Access is checked when the message is accepted and again immediately before the run. Shared replies are ordinary Space messages visible to that conversation's readers, while Hosted AI usage is charged to the invoking member.
+
+## Space Smart Library Search
+
+- `GET /spaces/{spaceID}/library/search/semantic?q=...` searches one Space and falls back to lexical matching when semantic usage is unavailable.
+- `GET /search/spaces?q=...&limit=...` creates at most one query embedding, searches only Spaces where the requester can view Library content, and returns Space/item identity plus a deep link.
+
+Library intelligence jobs persist the billing user that initiated enablement, reindexing, or upload. Hosted AI exhaustion requeues optional analysis for the wallet reset and never blocks the underlying upload.
 
 ## Rate Limits
 

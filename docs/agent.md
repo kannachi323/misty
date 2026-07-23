@@ -2,21 +2,15 @@
 
 The AI service is exposed through authenticated `/ai` and `/api/ai` routes. Sessions are in-memory through `agent.SessionStore`; restarting the server drops active sessions and events.
 
-## Mika Model Routing
+## Automatic Model Routing
 
-Clients only see the Misty-owned Mika model names. The server maps the user's
-effective subscription to a route and keeps the concrete provider/model private:
+Free, trialing, and Pro accounts use the same automatic model-routing policy.
+Clients see `automatic` (`Automatic`) and cannot request or override an
+internal model tier. Concrete provider/model names remain in the versioned,
+server-only hosted-AI ledger for cost reconciliation and are never returned by
+AI status or event endpoints.
 
-- Basic and legacy tiers: `mika-low` (`Mika Low`)
-- Pro and Pro trials: `mika-med` (`Mika Med`)
-- Max: `mika-high` (`Mika High`)
-
-The client cannot request or override a Mika tier. Message and tool-result calls
-re-evaluate the current license so subscription changes take effect on active
-sessions. Provider/model names remain in server-only credit usage records for
-cost reconciliation, but are not returned by AI status or event endpoints.
-
-Production Mika requests use Vercel AI Gateway's OpenAI-compatible Responses API.
+Production agent requests use Vercel AI Gateway's OpenAI-compatible Responses API.
 The only required secret for an externally hosted server is:
 
 ```bash
@@ -34,18 +28,31 @@ MISTY_AI_MED_MODEL=google/gemini-2.5-flash
 MISTY_AI_HIGH_MODEL=google/gemini-3.5-flash
 ```
 
+Hosted-AI provider rates can be updated without a deploy-time code change:
+
+```bash
+MISTY_HOSTED_AI_RATE_CARD_VERSION=2026-07-22-v1
+MISTY_HOSTED_AI_MODEL_RATES_JSON='{"creator/model":{"input":300,"cached_input":30,"output":2500}}'
+MISTY_HOSTED_AI_EMBEDDING_IMAGE_MICROUSD=120
+MISTY_HOSTED_AI_EMBEDDING_TOKEN_MILLIUSD=150
+MISTY_HOSTED_AI_TRANSCRIPTION_HOUR_MICROUSD=100000
+```
+
+Token rates are thousandths of a dollar per one million tokens; embedding and
+transcription values are provider-cost micro-USD before the 25% safety multiplier.
+
 The model values use Vercel's `creator/model` IDs. If gateway authentication is
-missing, all Mika routes use the mock provider and `/ai/status` reports
+missing, all agent routes use the mock provider and `/ai/status` reports
 `configured: false`; the server never silently falls back to a direct provider.
 
-Vercel's free credits are suitable for development smoke tests, but individual
+Vercel's free provider allowance is suitable for development smoke tests, but individual
 models can return HTTP 429 on the free tier. Fund gateway credits before treating
-all three Mika routes as production-ready.
+the configured routes as production-ready.
 
 ## Legacy Direct Providers
 
 The lower-level direct-provider factory remains available for local tests and
-compatibility, but `CreateServer` does not use it for Mika traffic. It chooses:
+compatibility, but `CreateServer` does not use it for managed agent traffic. It chooses:
 
 1. `MISTY_AI_PROVIDER`, when set.
 2. OpenAI when `OPENAI_API_KEY` is present.
@@ -106,14 +113,14 @@ Provider responses are expected to parse into `agent.ModelResponse`:
 - `tool_requests`: requested tools with risk and arguments.
 - `file_plan`: proposed file operations.
 
-Provider errors are logged internally and recorded as provider-neutral Mika
+Provider errors are logged internally and recorded as provider-neutral agent
 errors in the session rather than returned as HTTP 500 from the message endpoint.
 This keeps the client session recoverable without exposing routing details.
 
 ## Cancellation
 
 Vercel gateway requests use request-scoped contexts. The session cancel endpoint
-cancels the active HTTP request, releases its credit reservation, marks the
+cancels the active HTTP request, releases its hosted-AI reservation, marks the
 session canceled, and does not retry it. Client disconnects also cancel the
 request context.
 
@@ -156,17 +163,14 @@ Tool requests are passed through `PermissionPolicy.Apply`, which marks approvals
 - AI request bodies are capped at 2 MiB.
 - Known paths are collected from selected paths and successful tool results so file-plan validation can catch accidental overwrites.
 - Session ownership is enforced by user ID on all session reads and writes.
-- Credits are reserved before provider calls and settled from provider-reported
+- Hosted AI capacity is reserved before provider calls and settled from provider-reported
   input, cached-input, output, and reasoning usage. The internal provider/model
-  selects the server-owned rate card; public Mika aliases are never used for
+  selects the server-owned, versioned rate card; public routing labels are never used for
   provider billing calculations.
-- Mika usage is billed with granular micro-credits rather than a flat charge per
-  conversation. Fresh input, cached input, and output tokens use the internal
-  route's provider rate, converted at one credit per millionth of a dollar with
-  a 15% operating buffer. Monthly grants are 100,000 credits for Basic,
-  2,000,000 for Pro, and 6,000,000 for Max. Packs grant 1,500,000 or 3,500,000
-  credits. Existing balances migrate at 1 old credit to 1,000 micro-credits.
+- Usage is tracked internally at micro-USD precision from actual provider rates
+  with a 25% safety multiplier. The shared per-member pool resets every Monday
+  at 00:00 UTC. Free receives 150,000 internal units and Pro receives 1,000,000;
+  these values are never exposed as money or credits.
 - `MISTY_RUN_LIVE_AI_TEST=1 go test ./agent -run TestMikaGatewayLiveAgentCapabilities -v`
-  spends a small amount of gateway credit and verifies structured output, usage,
-  tool requests, tool results, file-plan generation, and all configured Mika tiers.
-  Free-tier rate limits are reported as skipped tier checks rather than schema failures.
+  spends a small amount of gateway capacity and verifies structured output,
+  usage, tool requests, tool results, and file-plan generation.

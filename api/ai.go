@@ -44,13 +44,17 @@ func (s *AIService) Status() http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"configured": s.runtime.MikaConfigured(tier),
-			"provider":   "misty",
-			"model":      string(tier),
-			"model_name": tier.DisplayName(),
-			"running":    false,
-			"session_id": nil,
-			"error":      nil,
+			"configured":            s.runtime.MikaConfigured(tier),
+			"provider":              "misty",
+			"model":                 agent.InitialSelectedModelID,
+			"model_name":            agent.InitialSelectedModelName,
+			"running":               false,
+			"session_id":            nil,
+			"error":                 nil,
+			"space_scoped_sessions": true,
+			"capabilities": map[string]bool{
+				"space_scoped_sessions": true,
+			},
 		})
 	}
 }
@@ -65,13 +69,99 @@ func (s *AIService) CreateSession() http.HandlerFunc {
 			writeAIRateLimit(w, retryAfter)
 			return
 		}
-		if r.ContentLength > 0 {
-			http.Error(w, "this session endpoint does not accept a request body", http.StatusBadRequest)
+		var body struct {
+			AgentID    string `json:"agent_id"`
+			AgentJobID string `json:"agent_job_id"`
+			SpaceID    string `json:"space_id"`
+			ModelID    string `json:"model_id"`
+		}
+		if r.ContentLength > 0 && decodeAIJSON(w, r, &body) != nil {
 			return
 		}
-		session := s.runtime.CreateSessionWithBilling(userID, userID)
+		body.AgentID, body.SpaceID, body.ModelID = strings.TrimSpace(body.AgentID), strings.TrimSpace(body.SpaceID), strings.TrimSpace(body.ModelID)
+		// A chat may pin its own model, distinct from the agent's configured
+		// default. When the client sends a model_id it overrides the agent's
+		// model for this session only; the agent's stored model is never touched.
+		requestedModelID := body.ModelID
+		systemPrompt := ""
+		allowTools := true
+		allowWriteTools := true
+		if body.AgentID != "" {
+			var personal *db.PersonalAgent
+			var lookupErr error
+			if body.SpaceID != "" {
+				personal, lookupErr = s.database.PersonalAgentForSpace(r.Context(), userID, body.SpaceID, body.AgentID)
+			} else {
+				personal, lookupErr = s.database.PersonalAgentByID(r.Context(), userID, body.AgentID)
+			}
+			if lookupErr != nil {
+				writeAgentError(w, lookupErr)
+				return
+			}
+			if requestedModelID != "" {
+				// Per-chat override: run this session on the requested model
+				// regardless of the agent's own model mode.
+				body.ModelID = requestedModelID
+			} else {
+				if personal.ModelMode != "pinned" || strings.TrimSpace(personal.ModelID) == "" {
+					writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"code": "agent_model_required"})
+					return
+				}
+				body.ModelID = personal.ModelID
+			}
+			var toolPolicy struct {
+				Write bool `json:"write"`
+			}
+			if json.Unmarshal(personal.ToolPermissions, &toolPolicy) == nil {
+				allowWriteTools = toolPolicy.Write
+			}
+			systemPrompt = "You are " + personal.Name + ". Follow these owner-provided instructions:\n" + personal.Instructions
+			if body.SpaceID != "" {
+				contextText, contextErr := s.database.PersonalAgentSpaceContext(r.Context(), userID, body.SpaceID, personal.ContextPermissions)
+				if contextErr != nil {
+					writeSpaceError(w, contextErr)
+					return
+				}
+				systemPrompt += "\n\nUse only this permission-filtered Space context when relevant:\n" + contextText
+				memoryText, memoryErr := s.database.PersonalAgentMemoryContext(r.Context(), userID, body.SpaceID, personal.ID)
+				if memoryErr != nil {
+					writeAgentError(w, memoryErr)
+					return
+				}
+				if memoryText != "" {
+					systemPrompt += "\n\nPrivate memory for this user, agent, and Space. Do not expose it to other members:\n" + memoryText
+				}
+			}
+		} else if body.SpaceID != "" {
+			if err := s.database.ValidateAgentSpaceAccess(r.Context(), userID, body.SpaceID, ""); err != nil {
+				writeAISessionAccessError(w, err)
+				return
+			}
+			contextText, contextErr := s.database.PersonalAgentSpaceContext(r.Context(), userID, body.SpaceID, json.RawMessage(`{"space_chat":true,"library":true,"notes":true,"tasks":true,"members":true}`))
+			if contextErr != nil {
+				writeSpaceError(w, contextErr)
+				return
+			}
+			systemPrompt = "Use this permission-filtered Space context when relevant:\n" + contextText
+		}
+		if body.ModelID == "" {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"code": "agent_model_required"})
+			return
+		}
+		if !agent.GatewayModelAvailable(r.Context(), body.ModelID) {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"code": "agent_model_unavailable"})
+			return
+		}
+		allowTools = agent.GatewayModelSupportsTools(r.Context(), body.ModelID)
+		session := s.runtime.CreateSessionWithModel(userID, userID, body.ModelID)
+		_ = s.runtime.ConfigureSession(session.ID, userID, systemPrompt, allowTools, allowWriteTools)
+		if err := s.database.BindAgentSessionContext(r.Context(), userID, session.ID, body.AgentID, body.SpaceID, body.ModelID, agent.GatewayModelCatalogVersion); err != nil {
+			writeAIError(w, err)
+			return
+		}
 		writeJSON(w, http.StatusCreated, map[string]any{
-			"session_id": session.ID,
+			"session_id": session.ID, "agent_id": body.AgentID, "space_id": body.SpaceID, "model_id": body.ModelID,
+			"model_catalog_version": agent.GatewayModelCatalogVersion,
 		})
 	}
 }
@@ -103,6 +193,10 @@ func (s *AIService) Transcript() http.HandlerFunc {
 			return
 		}
 		sessionID := strings.TrimSpace(chi.URLParam(r, "sessionID"))
+		if err := s.database.ValidateAgentSessionAccess(r.Context(), userID, sessionID); err != nil {
+			writeAISessionAccessError(w, err)
+			return
+		}
 		messages, err := s.runtime.Transcript(r.Context(), sessionID, userID)
 		if err != nil {
 			writeAIError(w, err)
@@ -162,17 +256,12 @@ func (s *AIService) Complete() http.HandlerFunc {
 			return
 		}
 		defer release()
-		tier, err := s.mikaTierForUser(userID)
-		if err != nil {
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-		text, usage, err := s.runtime.CompleteWithTierContext(r.Context(), userID, body.Prompt, db.CreditMeterAutomationAI, tier)
+		text, usage, err := s.runtime.CompleteWithModelContext(r.Context(), userID, body.Prompt, db.CreditMeterAutomationAI, agent.InitialSelectedModelID)
 		if err != nil {
 			writeAIError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"text": text, "model": string(tier), "credits_used": usage.CreditsUsed, "credits_remaining": usage.CreditsRemaining})
+		writeJSON(w, http.StatusOK, map[string]any{"text": text, "model": agent.InitialSelectedModelID, "hosted_ai_used_ratio": usage.UsedRatio, "hosted_ai_reset_at": usage.ResetAt})
 	}
 }
 
@@ -190,6 +279,10 @@ func (s *AIService) SendMessage() http.HandlerFunc {
 		}
 		if messageRequestsDocumentTool(body) && !agentDocumentsEnabled() {
 			writeJSON(w, http.StatusNotFound, map[string]string{"code": "document_agents_disabled"})
+			return
+		}
+		if err := s.database.ValidateAgentSessionAccess(r.Context(), userID, sessionID); err != nil {
+			writeAISessionAccessError(w, err)
 			return
 		}
 		release, ok := s.acquireProviderCall(w, userID)
@@ -217,6 +310,10 @@ func (s *AIService) Events() http.HandlerFunc {
 			return
 		}
 		sessionID := strings.TrimSpace(chi.URLParam(r, "sessionID"))
+		if err := s.database.ValidateAgentSessionAccess(r.Context(), userID, sessionID); err != nil {
+			writeAISessionAccessError(w, err)
+			return
+		}
 		after, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("after")), 10, 64)
 		events, err := s.runtime.Events(sessionID, userID, after)
 		if err != nil {
@@ -243,6 +340,10 @@ func (s *AIService) SubmitToolResults() http.HandlerFunc {
 		}
 		if toolResultsContainDocuments(body.Results) && !agentDocumentsEnabled() {
 			writeJSON(w, http.StatusNotFound, map[string]string{"code": "document_agents_disabled"})
+			return
+		}
+		if err := s.database.ValidateAgentSessionAccess(r.Context(), userID, sessionID); err != nil {
+			writeAISessionAccessError(w, err)
 			return
 		}
 		release, ok := s.acquireProviderCall(w, userID)
@@ -298,7 +399,7 @@ func writeAIRateLimit(w http.ResponseWriter, retryAfter time.Duration) {
 	seconds := retryAfterSeconds(retryAfter)
 	w.Header().Set("Retry-After", strconv.Itoa(seconds))
 	writeJSON(w, http.StatusTooManyRequests, map[string]any{
-		"code": "rate_limited", "message": "Mika request limit reached. Try again later.",
+		"code": "rate_limited", "message": "Agent request limit reached. Try again later.",
 		"retry_after_seconds": seconds,
 	})
 }
@@ -315,14 +416,7 @@ func (s *AIService) mikaTierForUser(userID string) (agent.MikaTier, error) {
 }
 
 func mikaTierForLicenseTier(tier db.Tier) agent.MikaTier {
-	switch tier {
-	case db.TierMax:
-		return agent.MikaHigh
-	case db.TierPro:
-		return agent.MikaMed
-	default:
-		return agent.MikaLow
-	}
+	return agent.MikaMed
 }
 
 func (s *AIService) Cancel() http.HandlerFunc {
@@ -387,22 +481,34 @@ func decodeAIJSONWithLimit(w http.ResponseWriter, r *http.Request, dst any, limi
 }
 
 func writeAIError(w http.ResponseWriter, err error) {
-	var exhausted agent.CreditsExhaustedError
+	var exhausted agent.HostedAILimitReachedError
 	switch {
 	case errors.Is(err, context.Canceled):
-		writeJSON(w, 499, map[string]any{"code": "request_canceled", "message": "Mika request canceled."})
+		writeJSON(w, 499, map[string]any{"code": "request_canceled", "message": "Agent request canceled."})
 	case errors.As(err, &exhausted):
 		writeJSON(w, http.StatusPaymentRequired, map[string]any{
-			"code": "credits_exhausted", "required_credits": exhausted.Required,
-			"available_credits": exhausted.Available, "reset_at": exhausted.ResetAt,
-			"top_up_available": true,
+			"code": "hosted_ai_limit_reached", "message": "Weekly hosted AI usage is fully used.",
+			"reset_at": exhausted.ResetAt, "upgrade_available": true,
 		})
 	case errors.Is(err, agent.ErrSessionNotFound):
 		http.Error(w, "session not found", http.StatusNotFound)
+	case errors.Is(err, agent.ErrModelUnavailable):
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"code": "agent_model_unavailable", "message": "The selected model is unavailable. Choose another model or Automatic."})
 	case isAIInvalidRequest(err):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	default:
 		http.Error(w, "internal error", http.StatusInternalServerError)
+	}
+}
+
+func writeAISessionAccessError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, agent.ErrPersistedSessionNotFound):
+		http.Error(w, "session not found", http.StatusNotFound)
+	case errors.Is(err, db.ErrPersonalAgentNotFound), errors.Is(err, db.ErrSpaceForbidden), errors.Is(err, db.ErrLibraryForbidden):
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "forbidden"})
+	default:
+		writeSpaceError(w, err)
 	}
 }
 

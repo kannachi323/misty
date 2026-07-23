@@ -1,5 +1,13 @@
 # Unified Agent Workflow Platform
 
+## Personal Agent rollout
+
+The current interactive product treats Agent definitions as account-owned resources. They are private by default and can receive invocation grants for everyone or selected members in an individual Space. Owners may invoke their own Agents in any Space they can access. Granting an Agent exposes only its presentation and invocation capability; configuration, instructions, direct conversations, and memory remain private.
+
+Each invocation rechecks the Agent grant and current Space membership, then intersects the Agent's configured context/tools with the invoker's resource permissions, platform safety policy, and pinned model capabilities. Shared Space replies are visible to that conversation's readers. Memory is isolated by invoker, Agent, and Space, and Hosted AI usage is charged to the invoker.
+
+Migration `20260910000000_personal_agents.sql` backfills Space Agent definitions into personal Agents, translates Space-wide and selected-member policies into grants, preserves legacy instances/configuration/memory for compatibility and audit, and pauses migrated schedules for review. Existing workflow/version/run tables remain available during the supported-client window.
+
 The canonical hierarchy is:
 
 ```text
@@ -27,7 +35,7 @@ The v2 engine validates the graph and capability envelope before execution, reso
 
 Device-only capabilities fail an attempt with `device_unavailable` when no trusted device lease can execute them; they do not wait indefinitely. Cloud providers execute on the server. The effective tool set is the intersection of the Workflow envelope, pinned Agent access, user grants, resource ACLs, and healthy providers.
 
-Mika and Agent chat use the same discovery catalog and canonical run service. The catalog always advertises ordinary chat, plus capabilities from every attached workflow. Mika's existing tool-call loop remains the tool-call transport; workflow Agent-task nodes use the same managed Mika runtime inside a finite, schema-validated graph step.
+Agent chat and custom Agents use the same discovery catalog and canonical run service. The catalog always advertises ordinary chat, plus capabilities from every attached workflow. The existing tool-call loop remains the transport; workflow Agent-task nodes use the same managed runtime inside a finite, schema-validated graph step.
 
 ## Content and built-ins
 
@@ -47,7 +55,13 @@ Member conversations, runs, steps, workflow settings, event claims, memory, acti
 
 ## HTTP surface
 
-- `GET /api/agents/catalog`, `GET /api/mika/discovery`, `POST /api/mika/delegations`
+- `GET|POST /api/agents` and `GET|PATCH|DELETE /api/agents/{agentID}`
+- `GET|PUT /api/agents/{agentID}/space-grants`
+- `GET /api/ai/models`
+- `POST /api/ai/sessions` with optional `agent_id`, `space_id`, and `model_id`
+- `GET /api/spaces/{spaceID}/chat-agents`
+- `GET /api/search/spaces?q=...`
+- `GET /api/agents/catalog`; legacy agent-discovery/delegation aliases remain available under `/api/mika/*` during the compatibility window
 - `GET|POST /api/spaces/{spaceID}/agents/{agentID}/runs`
 - `GET|POST /api/spaces/{spaceID}/studio/workflows/{workflowID}/versions`
 - `GET|POST /api/spaces/{spaceID}/studio/agents/{agentID}/versions`

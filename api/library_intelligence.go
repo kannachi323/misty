@@ -6,12 +6,15 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	serveragent "github.com/kannachi323/misty/server/agent"
+	appbilling "github.com/kannachi323/misty/server/billing"
 	"github.com/kannachi323/misty/server/db"
 )
 
@@ -39,10 +42,10 @@ func (s *SpaceLibraryService) ProcessIntelligenceJobs(ctx context.Context, worke
 		processed++
 		if err := s.processIntelligenceJob(ctx, job); err != nil {
 			code := "provider_failed"
-			var insufficient db.InsufficientCreditsError
+			var insufficient db.HostedAILimitReachedError
 			switch {
 			case errors.As(err, &insufficient):
-				code = "insufficient_credits"
+				code = "hosted_ai_limit_reached"
 			case errors.Is(err, errLibraryUnsupportedIntelligenceMedia):
 				code = "unsupported_media"
 			case errors.Is(err, db.ErrLibraryForbidden):
@@ -69,7 +72,7 @@ func (s *SpaceLibraryService) processIntelligenceJob(ctx context.Context, job *d
 	if license, licenseErr := s.database.GetLicenseByUserID(job.BillingUserID); licenseErr == nil && license != nil {
 		tier = license.Tier
 	}
-	reservation, _, err := s.database.ReserveCredits(job.BillingUserID, tier, db.CreditMeterAssetAnalysisImage, "space-library-intelligence:"+job.ID, db.CreditDenominationScale, time.Now())
+	reservation, _, err := s.database.ReserveCredits(job.BillingUserID, tier, db.CreditMeterAssetAnalysisImage, "space-library-intelligence:"+job.ID, appbilling.EstimateSmartLibraryCharge(1), time.Now())
 	if err != nil {
 		return err
 	}
@@ -107,7 +110,8 @@ func (s *SpaceLibraryService) processIntelligenceJob(ctx context.Context, job *d
 		return err
 	}
 	if reservation != nil {
-		_, err = s.database.SettleCreditReservation(reservation.ID, "space-library-intelligence-settle:"+job.ID, db.CreditUsage{Provider: "vercel_ai_gateway", Model: metadata.Model, InputTokens: analysis.Usage.InputTokens, CachedInputTokens: analysis.Usage.CachedInputTokens, OutputTokens: analysis.Usage.OutputTokens, Credits: db.CreditDenominationScale})
+		charge := appbilling.SmartLibraryCharge(analysis.Usage, 1)
+		_, err = s.database.SettleCreditReservation(reservation.ID, "space-library-intelligence-settle:"+job.ID, db.CreditUsage{Provider: "vercel_ai_gateway", Model: metadata.Model, InputTokens: analysis.Usage.InputTokens, CachedInputTokens: analysis.Usage.CachedInputTokens, OutputTokens: analysis.Usage.OutputTokens, ProviderCost: appbilling.SmartLibraryProviderCost(analysis.Usage, 1), ChargeMicrousd: charge})
 		if err != nil {
 			return err
 		}
@@ -169,15 +173,143 @@ func (s *SpaceLibraryService) SemanticSearch() http.HandlerFunc {
 			writeLibraryError(w, db.ErrLibraryInvalid)
 			return
 		}
-		vector, _, embedErr := s.intelligence.EmbedQuery(r.Context(), query)
-		if embedErr != nil {
-			vector = nil
+		operation, _ := beginHostedSemanticQuery(r.Context(), s.database, s.intelligence, userID, "space-library-query:"+uuid.NewString(), query)
+		var vector []float64
+		if operation != nil {
+			vector = operation.Vector
+			defer operation.Release(s.database)
 		}
 		items, err := s.database.SearchSpaceLibraryIntelligence(r.Context(), userID, chi.URLParam(r, "spaceID"), query, vector, 100)
 		if err != nil {
 			writeLibraryError(w, err)
 			return
 		}
+		if operation != nil {
+			if err := operation.Settle(s.database); err != nil {
+				writeLibraryError(w, err)
+				return
+			}
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items, "semantic": len(vector) > 0, "request_id": "search_" + uuid.NewString()})
+	}
+}
+
+func (s *SpaceLibraryService) GlobalSemanticSearch() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := authenticatedUser(w, r, s.database)
+		if !ok {
+			return
+		}
+		query := strings.TrimSpace(r.URL.Query().Get("q"))
+		if query == "" || len([]rune(query)) > 256 {
+			writeLibraryError(w, db.ErrLibraryInvalid)
+			return
+		}
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		if limit < 1 || limit > 100 {
+			limit = 50
+		}
+		var operation *hostedSemanticQueryOperation
+		if s.aiEnabled && s.intelligence != nil {
+			operation, _ = beginHostedSemanticQuery(r.Context(), s.database, s.intelligence, userID, "global-space-library-query:"+uuid.NewString(), query)
+		}
+		var vector []float64
+		if operation != nil {
+			vector = operation.Vector
+			defer operation.Release(s.database)
+		}
+		spaces, err := s.database.ListSpaces(r.Context(), userID)
+		if err != nil {
+			writeLibraryError(w, err)
+			return
+		}
+		type globalHit struct {
+			SpaceID   string              `json:"space_id"`
+			SpaceName string              `json:"space_name"`
+			Item      db.SpaceLibraryItem `json:"item"`
+			DeepLink  string              `json:"deep_link"`
+		}
+		hits := []globalHit{}
+		for _, space := range spaces {
+			if space.Permissions[db.PermissionLibraryView] == false {
+				continue
+			}
+			items, searchErr := s.database.SearchSpaceLibraryIntelligence(r.Context(), userID, space.ID, query, vector, min(20, limit-len(hits)))
+			if searchErr != nil {
+				continue
+			}
+			for _, item := range items {
+				hits = append(hits, globalHit{SpaceID: space.ID, SpaceName: space.Name, Item: item, DeepLink: "/spaces/" + url.PathEscape(space.ID) + "/library?item=" + url.QueryEscape(item.ID)})
+				if len(hits) >= limit {
+					break
+				}
+			}
+			if len(hits) >= limit {
+				break
+			}
+		}
+		if operation != nil {
+			if err := operation.Settle(s.database); err != nil {
+				writeLibraryError(w, err)
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"hits": hits, "semantic": len(vector) > 0, "request_id": "search_" + uuid.NewString()})
+	}
+}
+
+type hostedSemanticQueryOperation struct {
+	Vector      []float64
+	Usage       serveragent.ModelUsage
+	Reservation *db.HostedAIReservation
+	SettleKey   string
+	OnSettled   func()
+	settled     bool
+}
+
+func beginHostedSemanticQuery(ctx context.Context, database *db.Database, analyzer *serveragent.SmartLibraryAnalyzer, userID, idempotencyKey, query string) (*hostedSemanticQueryOperation, error) {
+	var usage serveragent.ModelUsage
+	if database == nil || analyzer == nil {
+		return nil, errors.New("semantic search is unavailable")
+	}
+	tier := db.TierBasic
+	if license, err := database.GetLicenseByUserID(userID); err != nil {
+		return nil, err
+	} else if license != nil {
+		tier = license.Tier
+	}
+	reservation, _, err := database.ReserveHostedAIUsage(userID, tier, db.HostedAIMeterSemanticQuery, idempotencyKey, appbilling.EstimateSemanticQueryCharge(), time.Now())
+	if err != nil {
+		return nil, err
+	}
+	vector, usage, err := analyzer.EmbedQuery(ctx, query)
+	if err != nil {
+		_ = database.ReleaseHostedAIReservation(reservation.ID)
+		return nil, err
+	}
+	return &hostedSemanticQueryOperation{Vector: vector, Usage: usage, Reservation: reservation, SettleKey: idempotencyKey + ":settle"}, nil
+}
+
+func (operation *hostedSemanticQueryOperation) Settle(database *db.Database) error {
+	if operation == nil || operation.Reservation == nil || operation.settled {
+		return nil
+	}
+	charge := appbilling.SemanticQueryCharge(operation.Usage)
+	_, err := database.SettleHostedAIReservation(operation.Reservation.ID, operation.SettleKey, db.HostedAIUsage{
+		Provider: "vercel_ai_gateway", Model: serveragent.SmartLibraryEmbeddingModel, InputTokens: operation.Usage.InputTokens,
+		ProviderCost: appbilling.SemanticQueryProviderCost(operation.Usage), ChargeMicrousd: charge,
+	})
+	if err == nil {
+		operation.settled = true
+		if operation.OnSettled != nil {
+			operation.OnSettled()
+		}
+	}
+	return err
+}
+
+func (operation *hostedSemanticQueryOperation) Release(database *db.Database) {
+	if operation != nil && operation.Reservation != nil && !operation.settled {
+		_ = database.ReleaseHostedAIReservation(operation.Reservation.ID)
 	}
 }

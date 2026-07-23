@@ -77,7 +77,7 @@ func TestAgentMentionFailuresAreSafeAndActionable(t *testing.T) {
 		err  error
 		code string
 	}{
-		{name: "credits", err: serveragent.CreditsExhaustedError{Required: 10, Available: 2}, code: "credits_exhausted"},
+		{name: "hosted AI", err: serveragent.HostedAILimitReachedError{Required: 10, Available: 2}, code: "hosted_ai_limit_reached"},
 		{name: "integration", err: db.ErrWorkflowIntegrationRequired, code: "integration_required"},
 		{name: "permission", err: db.ErrLibraryForbidden, code: "forbidden"},
 		{name: "removed", err: db.ErrAgentNotFound, code: "resource_unavailable"},

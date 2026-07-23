@@ -188,33 +188,9 @@ func (service *StripeService) handleCheckout(session *checkoutCompletedEvent) er
 		// Entitlement is applied from customer.subscription.* where Stripe supplies canonical status and period data.
 		return nil
 	}
-	if kind == "credit_pack" {
-		userID := strings.TrimSpace(session.Metadata["user_id"])
-		packID := strings.TrimSpace(session.Metadata["pack_id"])
-		expectedAmount := packAmountMinor(packID)
-		if userID == "" || packCredits(packID) == 0 || expectedAmount == 0 {
-			return errors.New("credit checkout metadata is invalid")
-		}
-		if !strings.EqualFold(session.PaymentStatus, "paid") || session.AmountTotal != expectedAmount || !strings.EqualFold(session.Currency, "usd") {
-			return errors.New("credit checkout payment is not paid or does not match the pack")
-		}
-		license, err := service.database.GetLicenseByUserID(userID)
-		if err != nil {
-			return err
-		}
-		if license == nil {
-			return ErrLicenseNotFound
-		}
-		if _, err := service.database.GetOrCreateCreditWallet(userID, license.Tier, time.Now()); err != nil {
-			return err
-		}
-		if err := service.database.RecordCreditPurchase(db.CreditPurchase{UserID: userID, StripeCheckoutSessionID: session.ID,
-			StripePaymentIntentID: session.PaymentIntent, PackID: packID, Credits: packCredits(packID), Status: "completed"}); err != nil {
-			return err
-		}
-		return service.database.AddPurchasedCredits(userID, packID, "stripe_checkout:"+session.ID, packCredits(packID))
-	}
-	service.handleCheckoutCompleted(session)
+	// One-time lifetime products and credit packs are retired. Acknowledging
+	// stale events prevents Stripe retries without granting an entitlement.
+	log.Printf("Ignoring retired one-time checkout event for session %s", session.ID)
 	return nil
 }
 
@@ -343,8 +319,6 @@ func configuredSubscriptionPrice(priceID string) (db.Tier, BillingInterval, bool
 	}{
 		{"STRIPE_PRICE_PRO_MONTHLY", db.TierPro, BillingIntervalMonth},
 		{"STRIPE_PRICE_PRO_YEARLY", db.TierPro, BillingIntervalYear},
-		{"STRIPE_PRICE_MAX_MONTHLY", db.TierMax, BillingIntervalMonth},
-		{"STRIPE_PRICE_MAX_YEARLY", db.TierMax, BillingIntervalYear},
 	}
 	for _, price := range prices {
 		if configured := strings.TrimSpace(os.Getenv(price.env)); configured != "" && configured == strings.TrimSpace(priceID) {
@@ -445,17 +419,6 @@ func (service *StripeService) isReplayedCompletedCheckoutAfterReversal(session *
 }
 
 func (service *StripeService) handleChargeRefunded(charge *refundedChargeEvent) {
-	creditPurchase, creditErr := service.database.GetCreditPurchaseByPaymentIntent(strings.TrimSpace(charge.PaymentIntent))
-	if creditErr != nil {
-		log.Printf("Failed to find credit purchase for refund: %v", creditErr)
-		return
-	}
-	if creditPurchase != nil {
-		if err := service.database.RefundCreditPurchase(creditPurchase); err != nil {
-			log.Printf("Failed to refund credit purchase %s: %v", creditPurchase.ID, err)
-		}
-		return
-	}
 	purchase, err := service.database.GetStripePurchaseByPaymentIntent(strings.TrimSpace(charge.PaymentIntent))
 	if err != nil {
 		log.Printf("Failed to find purchase for refunded payment intent %s: %v", charge.PaymentIntent, err)
@@ -528,7 +491,7 @@ func tierFromMetadata(value string) (db.Tier, bool) {
 	case db.TierPro:
 		return db.TierPro, true
 	case db.TierMax:
-		return db.TierMax, true
+		return db.TierPro, true
 	default:
 		return "", false
 	}
@@ -539,7 +502,7 @@ func legacyTierFromMetadata(value string) (db.Tier, bool) {
 	case "personal":
 		return db.TierPro, true
 	case "pro", "max":
-		return db.TierMax, true
+		return db.TierPro, true
 	default:
 		return "", false
 	}

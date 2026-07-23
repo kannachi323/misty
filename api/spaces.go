@@ -118,6 +118,30 @@ func authenticatedUser(w http.ResponseWriter, r *http.Request, database *db.Data
 	return userID, true
 }
 
+func (s *SpacesService) MemberAvatar() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		requestingUserID, ok := authenticatedUser(w, r, s.database)
+		if !ok {
+			return
+		}
+		data, version, err := s.database.SpaceMemberAvatar(
+			r.Context(),
+			requestingUserID,
+			chi.URLParam(r, "spaceID"),
+			chi.URLParam(r, "userID"),
+		)
+		if err != nil {
+			writeSpaceError(w, err)
+			return
+		}
+		if len(data) == 0 {
+			writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+			return
+		}
+		writeAvatarPNG(w, data, version)
+	}
+}
+
 func writeSpaceError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, db.ErrSpaceNotFound), errors.Is(err, db.ErrSpaceInviteNotFound):
@@ -136,6 +160,8 @@ func writeSpaceError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "space_people_limit_reached"})
 	case errors.Is(err, db.ErrSpaceNodeLimit):
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "space_node_limit_reached"})
+	case errors.Is(err, db.ErrLibraryQuota):
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "owner_storage_quota_exceeded"})
 	case errors.Is(err, db.ErrSpaceConflict):
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "version_conflict"})
 	case errors.Is(err, db.ErrSpaceInviteExpired):
@@ -155,6 +181,11 @@ func (s *SpacesService) Spaces() http.HandlerFunc {
 		}
 		switch r.Method {
 		case http.MethodGet:
+			entitlements, err := s.database.EntitlementsForUser(r.Context(), userID)
+			if err != nil {
+				writeSpaceError(w, err)
+				return
+			}
 			spaces, err := s.database.ListSpaces(r.Context(), userID)
 			if err != nil {
 				writeSpaceError(w, err)
@@ -165,21 +196,14 @@ func (s *SpacesService) Spaces() http.HandlerFunc {
 				writeSpaceError(w, err)
 				return
 			}
-			owned := 0
-			for _, space := range spaces {
-				if space.OwnerUserID == userID {
-					owned++
-				}
+			storage, err := s.database.OwnerStorageUsage(r.Context(), userID)
+			if err != nil {
+				writeSpaceError(w, err)
+				return
 			}
-			remaining := db.MaxOwnedSpacesPerUser - owned
-			if remaining < 0 {
-				remaining = 0
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"spaces": spaces, "invitations": invites, "limits": map[string]any{
-				"owned": owned, "owned_limit": db.MaxOwnedSpacesPerUser, "remaining_owned": remaining,
-				"memberships": db.MaxSpacesPerUser, "people": db.MaxSpacePeople, "nodes": db.MaxSpaceNodes,
-				"space_storage_bytes": db.MaxSpaceStorageBytes,
-			}})
+			writeJSON(w, http.StatusOK, map[string]any{"spaces": spaces, "invitations": invites,
+				"entitlements":  entitlements,
+				"owner_storage": storage})
 		case http.MethodPost:
 			var body struct {
 				Name string `json:"name"`
@@ -408,18 +432,20 @@ func agentMentionFailureFromError(agentID string, err error) agentMentionFailure
 }
 
 func spaceRunFailureFromError(err error) (string, string) {
-	var exhausted serveragent.CreditsExhaustedError
+	var exhausted serveragent.HostedAILimitReachedError
 	switch {
 	case errors.Is(err, context.Canceled):
 		return "request_canceled", "The run was canceled before it could start."
 	case errors.As(err, &exhausted):
-		return "credits_exhausted", "The run could not start because this account does not have enough AI credits."
+		return "hosted_ai_limit_reached", "This member has used their weekly hosted AI allowance."
 	case errors.Is(err, db.ErrWorkflowIntegrationRequired):
 		return "integration_required", "The run needs a required Space integration before it can start."
 	case errors.Is(err, db.ErrLibraryForbidden), errors.Is(err, db.ErrSpaceForbidden):
 		return "forbidden", "You no longer have permission to run this resource."
 	case errors.Is(err, db.ErrAgentNotFound), errors.Is(err, db.ErrLibraryNotFound), errors.Is(err, db.ErrSpaceNotFound):
 		return "resource_unavailable", "This resource is no longer available in the Space."
+	case errors.Is(err, serveragent.ErrModelUnavailable):
+		return "agent_model_unavailable", "This Agent's selected model is unavailable. Its owner must choose another model or Automatic."
 	case errors.Is(err, db.ErrSpaceInvalid), errors.Is(err, db.ErrLibraryInvalid):
 		return "invalid_request", "The run input or workflow definition is invalid."
 	default:
@@ -468,11 +494,48 @@ func renderMessageText(content []db.MessageSpan) string {
 }
 
 func (s *SpacesService) runMentionedAgent(ctx context.Context, billingUserID, spaceID, conversationID, agentID, sourceMessageID string, content []db.MessageSpan, fileNodeIDs []string) (*db.SpaceMessage, error) {
+	personal, personalErr := s.database.PersonalAgentForSpace(ctx, billingUserID, spaceID, agentID)
+	if personalErr != nil && !errors.Is(personalErr, db.ErrPersonalAgentNotFound) {
+		return nil, personalErr
+	}
 	attachments, err := s.prepareSpaceAgentFiles(ctx, billingUserID, spaceID, fileNodeIDs)
 	if err != nil {
 		return nil, err // File preparation happens before the metered model call.
 	}
 	prompt := renderMessageText(content) + attachments
+	if personal != nil {
+		spaceContext, contextErr := s.database.PersonalAgentSpaceContextForConversation(ctx, billingUserID, spaceID, conversationID, personal.ContextPermissions)
+		if contextErr != nil {
+			return nil, contextErr
+		}
+		memoryContext, memoryErr := s.database.PersonalAgentMemoryContext(ctx, billingUserID, spaceID, personal.ID)
+		if memoryErr != nil {
+			return nil, memoryErr
+		}
+		groundedPrompt := "You are " + personal.Name + ". Follow these owner-provided instructions:\n" + personal.Instructions + "\n\nUse only this permission-filtered Space context when relevant:\n" + spaceContext
+		if memoryContext != "" {
+			groundedPrompt += "\n\nPrivate memory for this user, agent, and Space. Do not expose it to other members:\n" + memoryContext
+		}
+		groundedPrompt += "\n\nCurrent request:\n" + prompt
+		var text string
+		if personal.ModelMode == "pinned" {
+			text, _, err = s.agent.CompleteWithModelContext(ctx, billingUserID, groundedPrompt, "agent_chat_ai", personal.ModelID)
+		} else {
+			text, _, err = s.agent.CompleteWithTierContext(ctx, billingUserID, groundedPrompt, "agent_chat_ai", serveragent.MikaLow)
+		}
+		if err != nil {
+			return nil, err
+		}
+		runes := []rune(strings.TrimSpace(text))
+		if len(runes) > db.MaxMessageChars {
+			runes = runes[:db.MaxMessageChars]
+		}
+		reply, createErr := s.createConversationAgentMessage(ctx, billingUserID, spaceID, conversationID, agentID, string(runes))
+		if createErr == nil {
+			_ = s.database.AppendPersonalAgentMemory(ctx, billingUserID, spaceID, agentID, renderMessageText(content), string(runes))
+		}
+		return reply, createErr
+	}
 	runInput, err := json.Marshal(map[string]any{
 		"content":       content,
 		"file_node_ids": fileNodeIDs,

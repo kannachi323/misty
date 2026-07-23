@@ -68,7 +68,7 @@ func TestWriteAIErrorReturnsCanceledWithoutProviderDetails(t *testing.T) {
 	}
 }
 
-func TestWriteAIErrorReturnsStructuredCreditsExhausted(t *testing.T) {
+func TestWriteAIErrorReturnsStructuredHostedAILimit(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	writeAIError(recorder, agent.CreditsExhaustedError{Required: 25, Available: 10})
 	if recorder.Code != http.StatusPaymentRequired {
@@ -78,16 +78,16 @@ func TestWriteAIErrorReturnsStructuredCreditsExhausted(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["code"] != "credits_exhausted" || payload["top_up_available"] != true {
+	if payload["code"] != "hosted_ai_limit_reached" || payload["message"] == "" {
 		t.Fatalf("payload = %#v", payload)
 	}
 }
 
-func TestMikaTierFollowsSubscriptionTier(t *testing.T) {
+func TestAutomaticRoutingIsTheSameForEveryPlan(t *testing.T) {
 	tests := map[db.Tier]agent.MikaTier{
-		db.TierBasic: agent.MikaLow,
+		db.TierBasic: agent.MikaMed,
 		db.TierPro:   agent.MikaMed,
-		db.TierMax:   agent.MikaHigh,
+		db.TierMax:   agent.MikaMed,
 	}
 	for subscription, want := range tests {
 		if got := mikaTierForLicenseTier(subscription); got != want {

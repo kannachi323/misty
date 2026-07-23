@@ -1,8 +1,11 @@
 package billing
 
 import (
+	"encoding/json"
 	"errors"
 	"math"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,12 +26,27 @@ type modelRates struct {
 	input, cachedInput, output int64 // thousandths of USD per one million tokens
 }
 
+type configuredModelRates struct {
+	Input       int64 `json:"input"`
+	CachedInput int64 `json:"cached_input"`
+	Output      int64 `json:"output"`
+}
+
 const (
-	creditCostBufferPercent int64 = 15
+	creditCostBufferPercent int64 = 25
 )
 
 func ratesForModel(model string) modelRates {
 	model = strings.ToLower(strings.TrimSpace(model))
+	var configured map[string]configuredModelRates
+	if json.Unmarshal([]byte(strings.TrimSpace(os.Getenv("MISTY_HOSTED_AI_MODEL_RATES_JSON"))), &configured) == nil {
+		if rates, ok := configured[model]; ok && rates.Input >= 0 && rates.CachedInput >= 0 && rates.Output >= 0 {
+			return modelRates{input: rates.Input, cachedInput: rates.CachedInput, output: rates.Output}
+		}
+	}
+	if input, cachedInput, output, ok := agent.CachedGatewayModelRates(model); ok {
+		return modelRates{input: input, cachedInput: cachedInput, output: output}
+	}
 	switch {
 	case strings.Contains(model, "gemini-3.5-flash"):
 		return modelRates{input: 1500, cachedInput: 150, output: 9000}
@@ -65,6 +83,10 @@ func ratesForModel(model string) modelRates {
 }
 
 func creditsForUsage(model string, usage agent.ModelUsage) int64 {
+	return bufferedHostedAICharge(providerCostForUsage(model, usage))
+}
+
+func providerCostForUsage(model string, usage agent.ModelUsage) int64 {
 	rates := ratesForModel(model)
 	noncachedInput := usage.InputTokens - usage.CachedInputTokens
 	if noncachedInput < 0 {
@@ -75,26 +97,129 @@ func creditsForUsage(model string, usage agent.ModelUsage) int64 {
 	numerator = saturatingTokenCost(numerator, usage.CachedInputTokens, rates.cachedInput)
 	numerator = saturatingTokenCost(numerator, usage.OutputTokens, rates.output)
 
-	// One credit represents one millionth of a dollar of weighted provider cost.
+	// One internal unit represents one millionth of a dollar of weighted provider cost.
 	// Rates are stored as thousandths of USD per million tokens, so dividing the
-	// weighted numerator by 1,000 converts it to micro-credits. The 15% buffer
+	// weighted numerator by 1,000 converts it to micro-USD. The 25% buffer
 	// covers provider price drift and operating overhead without exposing the
-	// concrete provider or model to Mika users.
-	denominator := int64(100 * db.CreditDenominationScale)
-	multiplier := int64(100 + creditCostBufferPercent)
-	whole := numerator / denominator
-	remainder := numerator % denominator
-	if whole > math.MaxInt64/multiplier {
+	// concrete provider or model to customers.
+	denominator := db.CreditDenominationScale
+	if numerator > math.MaxInt64-denominator+1 {
 		return math.MaxInt64
 	}
-	credits := whole * multiplier
-	if remainder > 0 {
-		credits += (remainder*multiplier + denominator - 1) / denominator
-	}
-	if credits < 1 {
+	cost := (numerator + denominator - 1) / denominator
+	if cost < 1 {
 		return 1
 	}
-	return credits
+	return cost
+}
+
+func bufferedHostedAICharge(providerCost int64) int64 {
+	if providerCost < 1 {
+		return 1
+	}
+	if providerCost > math.MaxInt64/(100+creditCostBufferPercent) {
+		return math.MaxInt64
+	}
+	return (providerCost*(100+creditCostBufferPercent) + 99) / 100
+}
+
+func ProviderCostFromBufferedCharge(charge int64) int64 {
+	if charge < 1 {
+		return 1
+	}
+	return max(int64(1), (charge*100)/(100+creditCostBufferPercent))
+}
+
+func HostedAIChargeForUsage(model string, usage agent.ModelUsage) int64 {
+	return creditsForUsage(model, usage)
+}
+
+func ProviderCostForUsage(model string, usage agent.ModelUsage) int64 {
+	return providerCostForUsage(model, usage)
+}
+
+func EstimateSmartLibraryCharge(imageCount int) int64 {
+	if imageCount < 1 {
+		return 1
+	}
+	// Covers the normal vision pass, multimodal embedding, and a full fallback.
+	return int64(imageCount) * 1_500
+}
+
+func SmartLibraryCharge(usage agent.ModelUsage, embeddedImages int) int64 {
+	charge := HostedAIChargeForUsage(agent.SmartLibraryPrimaryModel, usage)
+	if embeddedImages > 0 {
+		// The default Gemini Embedding 2 list price is $0.00012 per image.
+		providerCost := saturatingTokenCost(0, int64(embeddedImages), configurableMicrousd("MISTY_HOSTED_AI_EMBEDDING_IMAGE_MICROUSD", 120))
+		charge += bufferedHostedAICharge(providerCost)
+	}
+	return max(int64(1), charge)
+}
+
+func SmartLibraryProviderCost(usage agent.ModelUsage, embeddedImages int) int64 {
+	cost := providerCostForUsage(agent.SmartLibraryPrimaryModel, usage)
+	if embeddedImages > 0 {
+		cost = saturatingTokenCost(cost, int64(embeddedImages), configurableMicrousd("MISTY_HOSTED_AI_EMBEDDING_IMAGE_MICROUSD", 120))
+	}
+	return cost
+}
+
+func EstimateSemanticQueryCharge() int64 { return 250 }
+
+func SemanticQueryCharge(usage agent.ModelUsage) int64 {
+	return bufferedHostedAICharge(SemanticQueryProviderCost(usage))
+}
+
+func SemanticQueryProviderCost(usage agent.ModelUsage) int64 {
+	rate := configurableMicrousd("MISTY_HOSTED_AI_EMBEDDING_TOKEN_MILLIUSD", 150)
+	weighted := saturatingTokenCost(0, usage.InputTokens, rate)
+	if weighted > math.MaxInt64-db.CreditDenominationScale+1 {
+		return math.MaxInt64
+	}
+	return max(int64(1), (weighted+db.CreditDenominationScale-1)/db.CreditDenominationScale)
+}
+
+func EstimateMediaIndexCharge(durationMS int64) int64 {
+	if durationMS < 1 {
+		return 1
+	}
+	// A conservative $0.015/minute reservation covers STT, eight visual frames,
+	// embeddings, and occasional fallback without turning minutes into a product quota.
+	return max(int64(1), (durationMS*15_000+59_999)/60_000)
+}
+
+func MediaIndexCharge(durationMS int64, usage agent.ModelUsage) int64 {
+	// The default batch transcription rate is $0.10/hour. Vision and text embeddings are token-metered.
+	hourlyRate := configurableMicrousd("MISTY_HOSTED_AI_TRANSCRIPTION_HOUR_MICROUSD", 100_000)
+	weightedDuration := saturatingTokenCost(0, durationMS, hourlyRate)
+	sttProviderMicrousd := int64(math.MaxInt64)
+	if weightedDuration <= math.MaxInt64-3_599_999 {
+		sttProviderMicrousd = max(int64(1), (weightedDuration+3_599_999)/3_600_000)
+	}
+	sttCharge := bufferedHostedAICharge(sttProviderMicrousd)
+	return max(int64(1), sttCharge+HostedAIChargeForUsage(agent.SmartLibraryPrimaryModel, usage))
+}
+
+func MediaIndexProviderCost(durationMS int64, usage agent.ModelUsage) int64 {
+	hourlyRate := configurableMicrousd("MISTY_HOSTED_AI_TRANSCRIPTION_HOUR_MICROUSD", 100_000)
+	weightedDuration := saturatingTokenCost(0, durationMS, hourlyRate)
+	sttCost := int64(math.MaxInt64)
+	if weightedDuration <= math.MaxInt64-3_599_999 {
+		sttCost = max(int64(1), (weightedDuration+3_599_999)/3_600_000)
+	}
+	modelCost := providerCostForUsage(agent.SmartLibraryPrimaryModel, usage)
+	if sttCost > math.MaxInt64-modelCost {
+		return math.MaxInt64
+	}
+	return sttCost + modelCost
+}
+
+func configurableMicrousd(name string, fallback int64) int64 {
+	value, err := strconv.ParseInt(strings.TrimSpace(os.Getenv(name)), 10, 64)
+	if err != nil || value < 1 {
+		return fallback
+	}
+	return value
 }
 
 func saturatingTokenCost(total, tokens, rate int64) int64 {
@@ -120,17 +245,17 @@ func (meter *CreditMeter) Reserve(userID, idempotencyKey, usageMeter, provider, 
 	credits := creditsForUsage(model, estimate)
 	reservation, wallet, err := meter.database.ReserveCredits(userID, tier, usageMeter, idempotencyKey, credits, meter.now())
 	if err != nil {
-		var insufficient db.InsufficientCreditsError
+		var insufficient db.HostedAILimitReachedError
 		if errors.As(err, &insufficient) {
 			resetAt := time.Time{}
 			if wallet != nil {
-				resetAt = wallet.AllowanceResetAt
+				resetAt = wallet.ResetAt
 			}
-			return nil, agent.CreditsExhaustedError{Required: insufficient.Required, Available: insufficient.Available, ResetAt: resetAt}
+			return nil, agent.HostedAILimitReachedError{Required: insufficient.Required, Available: insufficient.Available, ResetAt: resetAt}
 		}
 		return nil, err
 	}
-	return &agent.UsageReservation{ID: reservation.ID, ReservedCredits: reservation.ReservedCredits}, nil
+	return &agent.UsageReservation{ID: reservation.ID, ReservedMicrousd: reservation.ReservedMicrousd, ReservedCredits: reservation.ReservedMicrousd}, nil
 }
 
 func (meter *CreditMeter) Settle(reservation *agent.UsageReservation, idempotencyKey, usageMeter, provider, model string, usage agent.ModelUsage) (agent.UsageSettlement, error) {
@@ -139,22 +264,23 @@ func (meter *CreditMeter) Settle(reservation *agent.UsageReservation, idempotenc
 		usage.Estimated = true
 		usage.OutputTokens = 1
 	}
-	credits := creditsForUsage(model, usage)
-	if usage.Estimated && credits < reservation.ReservedCredits {
-		credits = reservation.ReservedCredits
+	charge := creditsForUsage(model, usage)
+	reserved := reservation.ReservedMicrousd
+	if reserved == 0 {
+		reserved = reservation.ReservedCredits
 	}
-	if credits > reservation.ReservedCredits {
-		credits = reservation.ReservedCredits
+	if usage.Estimated && charge < reserved {
+		charge = reserved
 	}
 	wallet, err := meter.database.SettleCreditReservation(reservation.ID, idempotencyKey, db.CreditUsage{
 		Provider: provider, Model: model, InputTokens: usage.InputTokens,
 		CachedInputTokens: usage.CachedInputTokens, OutputTokens: usage.OutputTokens,
-		ReasoningTokens: usage.ReasoningTokens, Credits: credits,
+		ReasoningTokens: usage.ReasoningTokens, ProviderCost: providerCostForUsage(model, usage), ChargeMicrousd: charge,
 	})
 	if err != nil {
 		return agent.UsageSettlement{}, err
 	}
-	return agent.UsageSettlement{CreditsUsed: credits, CreditsRemaining: wallet.Available()}, nil
+	return agent.UsageSettlement{ChargedMicrousd: charge, UsedRatio: wallet.UsedRatio(), ResetAt: wallet.ResetAt, CreditsUsed: charge, CreditsRemaining: wallet.Available()}, nil
 }
 
 func (meter *CreditMeter) Release(reservation *agent.UsageReservation) error {

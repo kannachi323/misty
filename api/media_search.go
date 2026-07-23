@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	serveragent "github.com/kannachi323/misty/server/agent"
+	appbilling "github.com/kannachi323/misty/server/billing"
 	"github.com/kannachi323/misty/server/db"
 )
 
@@ -72,11 +73,11 @@ func (s *MediaSearchService) IndexChunk() http.HandlerFunc {
 			return
 		}
 		if strings.EqualFold(strings.TrimSpace(os.Getenv("MEDIA_SEARCH_EMERGENCY_DISABLE")), "true") {
-			writeJSON(w, 503, map[string]any{"code": "media_search_disabled", "message": "Media Search is temporarily disabled. No credits were charged."})
+			writeJSON(w, 503, map[string]any{"code": "media_search_disabled", "message": "Media Search is temporarily disabled. Weekly usage was not charged."})
 			return
 		}
 		if s.analyzer == nil || strings.TrimSpace(s.analyzer.APIKey) == "" {
-			writeJSON(w, 503, map[string]any{"code": "media_search_unavailable", "message": "Media Search is not configured. No credits were charged."})
+			writeJSON(w, 503, map[string]any{"code": "media_search_unavailable", "message": "Media Search is not configured. Weekly usage was not charged."})
 			return
 		}
 		var body mediaIndexRequest
@@ -132,17 +133,21 @@ func (s *MediaSearchService) IndexChunk() http.HandlerFunc {
 			writeJSON(w, 200, map[string]any{"status": "indexed", "alreadyIndexed": true, "chunkIndex": body.ChunkIndex})
 			return
 		}
-		credits := max(int64(1), ((body.EndMS-body.StartMS)*db.CreditDenominationScale+59_999)/60_000)
+		estimatedUsage := appbilling.EstimateMediaIndexCharge(body.EndMS - body.StartMS)
 		tier := db.TierBasic
 		if license, licenseErr := s.database.GetLicenseByUserID(userID); licenseErr == nil && license != nil {
 			tier = license.Tier
 		}
-		reservation, _, err := s.database.ReserveCredits(userID, tier, db.CreditMeterMediaSearchMinute, "media-search:"+body.DeviceID+":"+body.AssetID+":"+fmtInt(int64(body.ChunkIndex))+":"+body.Fingerprint+":"+fmtInt(time.Now().UnixNano()), credits, time.Now())
+		reservation, usageWallet, err := s.database.ReserveCredits(userID, tier, db.CreditMeterMediaSearchMinute, "media-search:"+body.DeviceID+":"+body.AssetID+":"+fmtInt(int64(body.ChunkIndex))+":"+body.Fingerprint+":"+fmtInt(time.Now().UnixNano()), estimatedUsage, time.Now())
 		if err != nil {
 			_ = s.database.FailMediaSearchChunk(userID, body.DeviceID, body.AssetID, body.ChunkIndex, "billing_failed")
-			var insufficient db.InsufficientCreditsError
+			var insufficient db.HostedAILimitReachedError
 			if errors.As(err, &insufficient) {
-				writeJSON(w, 402, map[string]any{"code": "insufficient_credits", "message": "Not enough Mika credits to index this media.", "requiredCredits": float64(insufficient.Required) / float64(db.CreditDenominationScale), "availableCredits": float64(insufficient.Available) / float64(db.CreditDenominationScale)})
+				response := map[string]any{"code": "hosted_ai_limit_reached", "message": "Weekly hosted AI usage is fully used."}
+				if usageWallet != nil {
+					response["reset_at"] = usageWallet.ResetAt
+				}
+				writeJSON(w, 402, response)
 				return
 			}
 			http.Error(w, "internal error", 500)
@@ -161,7 +166,7 @@ func (s *MediaSearchService) IndexChunk() http.HandlerFunc {
 			addUsage(&totalUsage, usage)
 			if transcribeErr != nil {
 				_ = s.database.FailMediaSearchChunk(userID, body.DeviceID, body.AssetID, body.ChunkIndex, "transcription_failed")
-				writeJSON(w, 502, map[string]any{"code": "transcription_failed", "message": "Mika could not transcribe this chunk. No credits were charged."})
+				writeJSON(w, 502, map[string]any{"code": "transcription_failed", "message": "The agent could not transcribe this chunk. Weekly usage was not charged."})
 				return
 			}
 			texts := make([]string, len(transcript))
@@ -175,7 +180,7 @@ func (s *MediaSearchService) IndexChunk() http.HandlerFunc {
 				addUsage(&totalUsage, usage)
 				if embedErr != nil {
 					_ = s.database.FailMediaSearchChunk(userID, body.DeviceID, body.AssetID, body.ChunkIndex, "embedding_failed")
-					writeJSON(w, 502, map[string]any{"code": "embedding_failed", "message": "Mika could not index this transcript. No credits were charged."})
+					writeJSON(w, 502, map[string]any{"code": "embedding_failed", "message": "The agent could not index this transcript. Weekly usage was not charged."})
 					return
 				}
 			}
@@ -188,7 +193,7 @@ func (s *MediaSearchService) IndexChunk() http.HandlerFunc {
 			addUsage(&totalUsage, analysis.Usage)
 			if analyzeErr != nil {
 				_ = s.database.FailMediaSearchChunk(userID, body.DeviceID, body.AssetID, body.ChunkIndex, "visual_analysis_failed")
-				writeJSON(w, 502, map[string]any{"code": "visual_analysis_failed", "message": "Mika could not analyze the scenes. No credits were charged."})
+				writeJSON(w, 502, map[string]any{"code": "visual_analysis_failed", "message": "The agent could not analyze the scenes. Weekly usage was not charged."})
 				return
 			}
 			metadata := map[string]serveragent.SmartLibraryMetadata{}
@@ -213,7 +218,7 @@ func (s *MediaSearchService) IndexChunk() http.HandlerFunc {
 			addUsage(&totalUsage, usage)
 			if embedErr != nil {
 				_ = s.database.FailMediaSearchChunk(userID, body.DeviceID, body.AssetID, body.ChunkIndex, "visual_embedding_failed")
-				writeJSON(w, 502, map[string]any{"code": "visual_embedding_failed", "message": "Mika could not index the scenes. No credits were charged."})
+				writeJSON(w, 502, map[string]any{"code": "visual_embedding_failed", "message": "The agent could not index the scenes. Weekly usage was not charged."})
 				return
 			}
 			byID := map[string][]float64{}
@@ -239,13 +244,19 @@ func (s *MediaSearchService) IndexChunk() http.HandlerFunc {
 			http.Error(w, "internal error", 500)
 			return
 		}
-		if _, err = s.database.SettleCreditReservation(reservation.ID, "media-search-settle:"+body.DeviceID+":"+body.AssetID+":"+fmtInt(int64(body.ChunkIndex))+":"+body.Fingerprint, db.CreditUsage{Provider: "vercel_ai_gateway", Model: "media-search-routing", InputTokens: totalUsage.InputTokens, CachedInputTokens: totalUsage.CachedInputTokens, OutputTokens: totalUsage.OutputTokens, Credits: credits}); err != nil {
+		charge := appbilling.MediaIndexCharge(body.EndMS-body.StartMS, totalUsage)
+		if _, err = s.database.SettleCreditReservation(reservation.ID, "media-search-settle:"+body.DeviceID+":"+body.AssetID+":"+fmtInt(int64(body.ChunkIndex))+":"+body.Fingerprint, db.CreditUsage{Provider: "vercel_ai_gateway", Model: "media-search-routing", InputTokens: totalUsage.InputTokens, CachedInputTokens: totalUsage.CachedInputTokens, OutputTokens: totalUsage.OutputTokens, ProviderCost: appbilling.MediaIndexProviderCost(body.EndMS-body.StartMS, totalUsage), ChargeMicrousd: charge}); err != nil {
 			_ = s.database.FailMediaSearchChunk(userID, body.DeviceID, body.AssetID, body.ChunkIndex, "billing_settlement_failed")
 			http.Error(w, "internal error", 500)
 			return
 		}
 		release = false
-		writeJSON(w, 200, map[string]any{"status": "indexed", "chunkIndex": body.ChunkIndex, "segmentCount": len(segments), "indexedThroughMs": body.EndMS, "creditsUsed": float64(credits) / float64(db.CreditDenominationScale)})
+		wallet, walletErr := s.database.GetOrCreateHostedAIWallet(userID, tier, time.Now())
+		if walletErr != nil || wallet == nil {
+			http.Error(w, "internal error", 500)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"status": "indexed", "chunkIndex": body.ChunkIndex, "segmentCount": len(segments), "indexedThroughMs": body.EndMS, "hostedAIUsedRatio": wallet.UsedRatio(), "hostedAIResetAt": wallet.ResetAt})
 	}
 }
 
@@ -317,7 +328,10 @@ func (s *MediaSearchService) Search() http.HandlerFunc {
 		if body.Limit == 0 {
 			body.Limit = 20
 		}
-		vector, err := s.cachedEmbedding(r.Context(), userID, body.DeviceID, body.Query)
+		vector, semanticOperation, err := s.cachedEmbedding(r.Context(), userID, body.DeviceID, body.Query)
+		if semanticOperation != nil {
+			defer semanticOperation.Release(s.database)
+		}
 		if err != nil {
 			vector = nil
 		}
@@ -325,6 +339,12 @@ func (s *MediaSearchService) Search() http.HandlerFunc {
 		if err != nil {
 			http.Error(w, "internal error", 500)
 			return
+		}
+		if semanticOperation != nil {
+			if err := semanticOperation.Settle(s.database); err != nil {
+				http.Error(w, "internal error", 500)
+				return
+			}
 		}
 		writeJSON(w, 200, map[string]any{"hits": hits})
 	}
@@ -413,28 +433,31 @@ func (s *MediaSearchService) AdoptLegacyDevice() http.HandlerFunc {
 	}
 }
 
-func (s *MediaSearchService) cachedEmbedding(ctx context.Context, userID, deviceID, query string) ([]float64, error) {
+func (s *MediaSearchService) cachedEmbedding(ctx context.Context, userID, deviceID, query string) ([]float64, *hostedSemanticQueryOperation, error) {
 	if s.analyzer == nil || strings.TrimSpace(s.analyzer.APIKey) == "" {
-		return nil, errors.New("media semantic search is unavailable")
+		return nil, nil, errors.New("media semantic search is unavailable")
 	}
 	key := sha256.Sum256([]byte(userID + "\x00" + deviceID + "\x00" + strings.ToLower(query)))
 	s.cacheMu.Lock()
 	cached, found := s.queryCache[key]
 	s.cacheMu.Unlock()
 	if found && cached.expires.After(time.Now()) {
-		return append([]float64(nil), cached.vector...), nil
+		return append([]float64(nil), cached.vector...), nil, nil
 	}
-	vector, _, err := s.analyzer.EmbedQuery(ctx, query)
+	operation, err := beginHostedSemanticQuery(ctx, s.database, s.analyzer, userID, "media-query:"+strconv.FormatInt(time.Now().UnixNano(), 10), query)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	s.cacheMu.Lock()
-	if len(s.queryCache) > 500 {
-		s.queryCache = map[[32]byte]cachedSemanticQuery{}
+	vector := operation.Vector
+	operation.OnSettled = func() {
+		s.cacheMu.Lock()
+		defer s.cacheMu.Unlock()
+		if len(s.queryCache) > 500 {
+			s.queryCache = map[[32]byte]cachedSemanticQuery{}
+		}
+		s.queryCache[key] = cachedSemanticQuery{vector: append([]float64(nil), vector...), expires: time.Now().Add(10 * time.Minute)}
 	}
-	s.queryCache[key] = cachedSemanticQuery{vector: append([]float64(nil), vector...), expires: time.Now().Add(10 * time.Minute)}
-	s.cacheMu.Unlock()
-	return vector, nil
+	return vector, operation, nil
 }
 func (s *MediaSearchService) requireUser(w http.ResponseWriter, r *http.Request) (string, bool) {
 	userID, err := sessionUserID(r, s.database)

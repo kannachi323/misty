@@ -59,8 +59,8 @@ func (db *Database) QueueLibraryIntelligenceForItem(ctx context.Context, userID,
 			return err
 		}
 		payload, _ := json.Marshal(map[string]bool{"ai": aiEnabled, "semantic": semanticEnabled})
-		_, err := tx.ExecContext(ctx, `INSERT INTO library_processing_jobs(id,security_domain_id,space_id,job_kind,target_kind,target_id,payload,priority) VALUES($1,$2,$3,'ai','space_library_item',$4,$5,4)
-			ON CONFLICT(job_kind,target_kind,target_id) DO UPDATE SET payload=EXCLUDED.payload,state=CASE WHEN library_processing_jobs.state IN ('leased','running') THEN library_processing_jobs.state ELSE 'queued' END,error_code=NULL,available_at=NOW(),updated_at=NOW()`, "job_"+uuid.NewString(), domainID, spaceID, itemID, payload)
+		_, err := tx.ExecContext(ctx, `INSERT INTO library_processing_jobs(id,security_domain_id,space_id,job_kind,target_kind,target_id,payload,priority,billing_user_id) VALUES($1,$2,$3,'ai','space_library_item',$4,$5,4,$6)
+			ON CONFLICT(job_kind,target_kind,target_id) DO UPDATE SET payload=EXCLUDED.payload,billing_user_id=EXCLUDED.billing_user_id,state=CASE WHEN library_processing_jobs.state IN ('leased','running') THEN library_processing_jobs.state ELSE 'queued' END,error_code=NULL,available_at=NOW(),updated_at=NOW()`, "job_"+uuid.NewString(), domainID, spaceID, itemID, payload, userID)
 		return err
 	})
 }
@@ -76,7 +76,7 @@ func (db *Database) ClaimLibraryIntelligenceJob(ctx context.Context, workerID st
 			SELECT id FROM library_processing_jobs WHERE job_kind='ai' AND (state='queued' AND available_at<=NOW() OR state IN ('leased','running') AND lease_expires_at<=NOW()) ORDER BY priority DESC,created_at FOR UPDATE SKIP LOCKED LIMIT 1
 		), claimed AS (
 			UPDATE library_processing_jobs j SET state='leased',lease_token=$1,lease_owner=$2,lease_expires_at=NOW()+$3::interval,attempt_count=attempt_count+1,updated_at=NOW() FROM candidate WHERE j.id=candidate.id RETURNING j.*
-		) SELECT c.id,c.security_domain_id,c.space_id,c.target_id,i.file_id,b.r2_object_key,b.server_detected_mime_type,b.byte_size,f.original_filename,i.display_name,i.caption,i.tags,COALESCE(p.enabled_by_user_id,i.added_by_user_id),c.payload,c.attempt_count
+		) SELECT c.id,c.security_domain_id,c.space_id,c.target_id,i.file_id,b.r2_object_key,b.server_detected_mime_type,b.byte_size,f.original_filename,i.display_name,i.caption,i.tags,COALESCE(c.billing_user_id,i.added_by_user_id),c.payload,c.attempt_count
 			FROM claimed c JOIN space_library_items i ON i.id=c.target_id JOIN library_files f ON f.id=i.file_id JOIN library_blobs b ON b.id=f.blob_id LEFT JOIN space_library_intelligence_policies p ON p.space_id=i.space_id
 			WHERE i.lifecycle_state='ready' AND f.lifecycle_state='ready' AND b.lifecycle_state='ready'`, out.LeaseToken, workerID, lease.String()).Scan(&out.ID, &out.SecurityDomainID, &out.SpaceID, &out.ItemID, &out.FileID, &out.ObjectKey, &out.MIMEType, &out.ByteSize, &out.Filename, &out.DisplayName, &out.Caption, &rawTags, &out.BillingUserID, &out.Payload, &out.AttemptCount); err != nil {
 			return err
@@ -141,8 +141,20 @@ func (db *Database) FailLibraryIntelligenceJob(ctx context.Context, job *Library
 		return ErrLibraryInvalid
 	}
 	return db.spaceTx(ctx, func(tx *sql.Tx) error {
+		if code == "hosted_ai_limit_reached" {
+			_, err := tx.ExecContext(ctx, `UPDATE library_processing_jobs SET state='queued',error_code=$1,
+				available_at=COALESCE((SELECT reset_at FROM hosted_ai_wallets WHERE user_id=$2),NOW()+INTERVAL '7 days'),
+				attempt_count=GREATEST(0,attempt_count-1),lease_token=NULL,lease_owner=NULL,lease_expires_at=NULL,updated_at=NOW()
+				WHERE id=$3 AND lease_token=$4 AND state IN ('leased','running')`, code, job.BillingUserID, job.ID, job.LeaseToken)
+			if err == nil {
+				_, _ = tx.ExecContext(ctx, `INSERT INTO space_library_search_documents(space_id,space_library_item_id,security_domain_id,state,error_code)
+					VALUES($1,$2,$3,'processing',$4) ON CONFLICT(space_id,space_library_item_id)
+					DO UPDATE SET state='processing',error_code=EXCLUDED.error_code,updated_at=NOW()`, job.SpaceID, job.ItemID, job.SecurityDomainID, code)
+			}
+			return err
+		}
 		state := "queued"
-		if job.AttemptCount >= 5 || code == "insufficient_credits" || code == "unsupported_media" || code == "policy_disabled" {
+		if job.AttemptCount >= 5 || code == "unsupported_media" || code == "policy_disabled" {
 			state = "dead"
 		}
 		_, err := tx.ExecContext(ctx, `UPDATE library_processing_jobs SET state=$1,error_code=$2,available_at=NOW()+make_interval(secs=>LEAST(300,attempt_count*attempt_count*5)),lease_token=NULL,lease_owner=NULL,lease_expires_at=NULL,updated_at=NOW() WHERE id=$3 AND lease_token=$4 AND state IN ('leased','running')`, state, code, job.ID, job.LeaseToken)

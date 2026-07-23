@@ -129,7 +129,7 @@ func (db *Database) GetStripeCustomerIDForUser(userID string) (string, error) {
 
 func SubscriptionAllowsPaidAccess(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case SubscriptionStatusTrialing, SubscriptionStatusActive, SubscriptionStatusPastDue:
+	case SubscriptionStatusTrialing, SubscriptionStatusActive:
 		return true
 	default:
 		return false
@@ -140,16 +140,19 @@ func (db *Database) ApplyEffectiveSubscriptionEntitlement(subscription *StripeSu
 	if subscription == nil {
 		return nil
 	}
+	if strings.EqualFold(subscription.Status, SubscriptionStatusTrialing) {
+		return db.SetStripeTrialState(subscription.LicenseID, subscription.CurrentPeriodEnd)
+	}
 	tier := TierBasic
 	if SubscriptionAllowsPaidAccess(subscription.Status) {
-		tier = subscription.Tier
+		tier = NormalizePlan(subscription.Tier)
 	} else {
 		license, err := db.GetLicenseByUserID(subscription.UserID)
 		if err != nil {
 			return err
 		}
 		if license != nil && license.LegacyTier != nil {
-			tier = *license.LegacyTier
+			tier = NormalizePlan(*license.LegacyTier)
 		}
 	}
 	if err := db.SetLicenseStateByID(subscription.LicenseID, tier, LicenseStatusActive, nil); err != nil {
