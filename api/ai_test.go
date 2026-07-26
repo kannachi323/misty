@@ -84,14 +84,14 @@ func TestWriteAIErrorReturnsStructuredHostedAILimit(t *testing.T) {
 }
 
 func TestAutomaticRoutingIsTheSameForEveryPlan(t *testing.T) {
-	tests := map[db.Tier]agent.MikaTier{
-		db.TierBasic: agent.MikaMed,
-		db.TierPro:   agent.MikaMed,
-		db.TierMax:   agent.MikaMed,
+	tests := map[db.Tier]agent.AgentTier{
+		db.TierBasic: agent.TierMed,
+		db.TierPro:   agent.TierMed,
+		db.TierMax:   agent.TierMed,
 	}
 	for subscription, want := range tests {
-		if got := mikaTierForLicenseTier(subscription); got != want {
-			t.Fatalf("mikaTierForLicenseTier(%q) = %q, want %q", subscription, got, want)
+		if got := agentTierForLicenseTier(subscription); got != want {
+			t.Fatalf("agentTierForLicenseTier(%q) = %q, want %q", subscription, got, want)
 		}
 	}
 }

@@ -171,6 +171,6 @@ Tool requests are passed through `PermissionPolicy.Apply`, which marks approvals
   with a 25% safety multiplier. The shared per-member pool resets every Monday
   at 00:00 UTC. Free receives 150,000 internal units and Pro receives 1,000,000;
   these values are never exposed as money or credits.
-- `MISTY_RUN_LIVE_AI_TEST=1 go test ./agent -run TestMikaGatewayLiveAgentCapabilities -v`
+- `MISTY_RUN_LIVE_AI_TEST=1 go test ./agent -run TestAgentGatewayLiveCapabilities -v`
   spends a small amount of gateway capacity and verifies structured output,
   usage, tool requests, tool results, and file-plan generation.

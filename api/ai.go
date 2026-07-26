@@ -38,13 +38,13 @@ func (s *AIService) Status() http.HandlerFunc {
 		if !ok {
 			return
 		}
-		tier, err := s.mikaTierForUser(userID)
+		tier, err := s.agentTierForUser(userID)
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"configured":            s.runtime.MikaConfigured(tier),
+			"configured":            s.runtime.AgentConfigured(tier),
 			"provider":              "misty",
 			"model":                 agent.InitialSelectedModelID,
 			"model_name":            agent.InitialSelectedModelName,
@@ -177,7 +177,7 @@ func (s *AIService) CreateSession() http.HandlerFunc {
 	}
 }
 
-// Sessions lists the account's retained Mika sessions so a client can rebuild
+// Sessions lists the account's retained agent sessions so a client can rebuild
 // its session list on a new device, or after losing local state.
 func (s *AIService) Sessions() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -301,7 +301,7 @@ func (s *AIService) SendMessage() http.HandlerFunc {
 			return
 		}
 		defer release()
-		tier, err := s.mikaTierForUser(userID)
+		tier, err := s.agentTierForUser(userID)
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
@@ -362,7 +362,7 @@ func (s *AIService) SubmitToolResults() http.HandlerFunc {
 			return
 		}
 		defer release()
-		tier, err := s.mikaTierForUser(userID)
+		tier, err := s.agentTierForUser(userID)
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
@@ -415,19 +415,23 @@ func writeAIRateLimit(w http.ResponseWriter, retryAfter time.Duration) {
 	})
 }
 
-func (s *AIService) mikaTierForUser(userID string) (agent.MikaTier, error) {
+func (s *AIService) agentTierForUser(userID string) (agent.AgentTier, error) {
 	license, err := s.database.GetLicenseByUserID(userID)
 	if err != nil {
-		return agent.MikaLow, err
+		return agent.TierLow, err
 	}
 	if license == nil {
-		return agent.MikaLow, nil
+		return agent.TierLow, nil
 	}
-	return mikaTierForLicenseTier(license.Tier), nil
+	return agentTierForLicenseTier(license.Tier), nil
 }
 
-func mikaTierForLicenseTier(tier db.Tier) agent.MikaTier {
-	return agent.MikaMed
+// agentTierForLicenseTier deliberately routes every paid plan to the same tier;
+// TestAutomaticRoutingIsTheSameForEveryPlan guards that. The parameter is the
+// seam for per-plan routing if tiers are ever priced differently, so it stays
+// even though it is currently unused.
+func agentTierForLicenseTier(_ db.Tier) agent.AgentTier {
+	return agent.TierMed
 }
 
 func (s *AIService) Cancel() http.HandlerFunc {

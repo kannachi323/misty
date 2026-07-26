@@ -526,7 +526,7 @@ func (s *SpacesService) runMentionedAgent(ctx context.Context, billingUserID, sp
 		if personal.ModelMode == "pinned" {
 			text, _, err = s.agent.CompleteWithModelContext(ctx, billingUserID, groundedPrompt, "agent_chat_ai", personal.ModelID)
 		} else {
-			text, _, err = s.agent.CompleteWithTierContext(ctx, billingUserID, groundedPrompt, "agent_chat_ai", serveragent.MikaLow)
+			text, _, err = s.agent.CompleteWithTierContext(ctx, billingUserID, groundedPrompt, "agent_chat_ai", serveragent.TierLow)
 		}
 		if err != nil {
 			return nil, err
