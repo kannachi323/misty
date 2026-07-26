@@ -204,7 +204,7 @@ func (s *AIService) Transcript() http.HandlerFunc {
 			return
 		}
 		sessionID := strings.TrimSpace(chi.URLParam(r, "sessionID"))
-		if err := s.database.ValidateAgentSessionAccess(r.Context(), userID, sessionID); err != nil {
+		if _, err := s.database.ValidateAgentSessionAccess(r.Context(), userID, sessionID); err != nil {
 			writeAISessionAccessError(w, err)
 			return
 		}
@@ -292,7 +292,7 @@ func (s *AIService) SendMessage() http.HandlerFunc {
 			writeJSON(w, http.StatusNotFound, map[string]string{"code": "document_agents_disabled"})
 			return
 		}
-		if err := s.database.ValidateAgentSessionAccess(r.Context(), userID, sessionID); err != nil {
+		if _, err := s.database.ValidateAgentSessionAccess(r.Context(), userID, sessionID); err != nil {
 			writeAISessionAccessError(w, err)
 			return
 		}
@@ -321,7 +321,7 @@ func (s *AIService) Events() http.HandlerFunc {
 			return
 		}
 		sessionID := strings.TrimSpace(chi.URLParam(r, "sessionID"))
-		if err := s.database.ValidateAgentSessionAccess(r.Context(), userID, sessionID); err != nil {
+		if _, err := s.database.ValidateAgentSessionAccess(r.Context(), userID, sessionID); err != nil {
 			writeAISessionAccessError(w, err)
 			return
 		}
@@ -353,7 +353,7 @@ func (s *AIService) SubmitToolResults() http.HandlerFunc {
 			writeJSON(w, http.StatusNotFound, map[string]string{"code": "document_agents_disabled"})
 			return
 		}
-		if err := s.database.ValidateAgentSessionAccess(r.Context(), userID, sessionID); err != nil {
+		if _, err := s.database.ValidateAgentSessionAccess(r.Context(), userID, sessionID); err != nil {
 			writeAISessionAccessError(w, err)
 			return
 		}
