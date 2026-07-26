@@ -20,11 +20,11 @@ func TestHostedAIWalletReservationSettlementAndWeeklyReset(t *testing.T) {
 	if wallet.WeeklyAllowanceMicrousd != FreeWeeklyHostedAIAllowance || wallet.WeeklyRemainingMicrousd != FreeWeeklyHostedAIAllowance {
 		t.Fatalf("free wallet = %#v", wallet)
 	}
-	reservation, wallet, err := database.ReserveHostedAIUsage(user.ID, TierBasic, HostedAIMeterAssistant, "request-1", 20_000, now)
+	reservation, wallet, err := database.ReserveHostedAIUsage(user.ID, TierBasic, HostedAIMeterAgent, "request-1", 20_000, now)
 	if err != nil || wallet.ReservedMicrousd != 20_000 {
 		t.Fatalf("reservation = %#v, wallet = %#v, err = %v", reservation, wallet, err)
 	}
-	replayed, replayWallet, err := database.ReserveHostedAIUsage(user.ID, TierBasic, HostedAIMeterAssistant, "request-1", 20_000, now)
+	replayed, replayWallet, err := database.ReserveHostedAIUsage(user.ID, TierBasic, HostedAIMeterAgent, "request-1", 20_000, now)
 	if err != nil || replayed.ID != reservation.ID || replayWallet.ReservedMicrousd != 20_000 {
 		t.Fatalf("idempotent reservation = %#v, wallet = %#v, err = %v", replayed, replayWallet, err)
 	}
@@ -57,7 +57,7 @@ func TestHostedAIPlanChangePreservesConsumedUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
-	reservation, _, err := database.ReserveHostedAIUsage(user.ID, TierBasic, HostedAIMeterAssistant, "request", 20_000, now)
+	reservation, _, err := database.ReserveHostedAIUsage(user.ID, TierBasic, HostedAIMeterAgent, "request", 20_000, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestHostedAILimitAndRetiredPurchases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = database.ReserveHostedAIUsage(user.ID, TierBasic, HostedAIMeterAssistant, "too-large", FreeWeeklyHostedAIAllowance+1, time.Now())
+	_, _, err = database.ReserveHostedAIUsage(user.ID, TierBasic, HostedAIMeterAgent, "too-large", FreeWeeklyHostedAIAllowance+1, time.Now())
 	var limit HostedAILimitReachedError
 	if !errors.As(err, &limit) {
 		t.Fatalf("limit error = %v", err)

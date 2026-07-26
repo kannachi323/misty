@@ -70,9 +70,9 @@ func (s *AIService) CreateSession() http.HandlerFunc {
 			return
 		}
 		var body struct {
-			AgentID    string `json:"agent_id"`
-			AgentJobID string `json:"agent_job_id"`
-			SpaceID    string `json:"space_id"`
+			AgentID         string `json:"agent_id"`
+			AgentJobID      string `json:"agent_job_id"`
+			SpaceID         string `json:"space_id"`
 			ModelID         string `json:"model_id"`
 			ReasoningEffort string `json:"reasoning_effort"`
 		}

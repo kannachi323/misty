@@ -23,13 +23,17 @@ func (e HostedAILimitReachedError) Error() string { return "hosted AI weekly lim
 type InsufficientCreditsError = HostedAILimitReachedError
 
 const (
-	HostedAIMeterAssistant     = "assistant_ai"
+	// The "assistant_ai" value is deliberately unchanged by the agent rename: it
+	// is written into hosted-AI usage and credit ledger rows, so renaming it
+	// would orphan every historical usage record and break rate-card lookups for
+	// past billing periods. Only the Go identifier was renamed.
+	HostedAIMeterAgent         = "assistant_ai"
 	HostedAIMeterAutomation    = "automation_ai"
 	HostedAIMeterSemanticQuery = "semantic_query"
 	HostedAIRateCardVersion    = "2026-07-22-weekly-microusd-v1"
 	MicrousdPerDollar          = int64(1_000_000)
 
-	CreditMeterAssistantAI  = HostedAIMeterAssistant
+	CreditMeterAgentAI      = HostedAIMeterAgent
 	CreditMeterAutomationAI = HostedAIMeterAutomation
 	CreditRateCardVersion   = HostedAIRateCardVersion
 	CreditDenominationScale = int64(1_000)

@@ -61,7 +61,7 @@ Member conversations, runs, steps, workflow settings, event claims, memory, acti
 - `POST /api/ai/sessions` with optional `agent_id`, `space_id`, and `model_id`
 - `GET /api/spaces/{spaceID}/chat-agents`
 - `GET /api/search/spaces?q=...`
-- `GET /api/agents/catalog`; legacy agent-discovery/delegation aliases remain available under `/api/mika/*` during the compatibility window
+- `GET /api/agents/catalog`, `GET /api/agents/discovery`, `POST /api/agents/delegations`; the pre-rename `/api/mika/*` paths remain registered as aliases to the same handlers during the compatibility window, because already-shipped desktop binaries still call them
 - `GET|POST /api/spaces/{spaceID}/agents/{agentID}/runs`
 - `GET|POST /api/spaces/{spaceID}/studio/workflows/{workflowID}/versions`
 - `GET|POST /api/spaces/{spaceID}/studio/agents/{agentID}/versions`
