@@ -70,6 +70,8 @@ func TestTablesHaveRowLevelSecurityEnabled(t *testing.T) {
 		"provider_gateway_state",
 		"realtime_tickets",
 		"space_resolve_tickets",
+		"space_setup_integrations",
+		"space_creation_requests",
 	}
 
 	for _, table := range tables {

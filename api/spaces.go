@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -23,17 +24,29 @@ import (
 	"github.com/go-chi/chi/v5"
 	serveragent "github.com/kannachi323/misty/server/agent"
 	"github.com/kannachi323/misty/server/db"
+	mistyemail "github.com/kannachi323/misty/server/email"
 	"github.com/kannachi323/misty/server/security"
 )
 
 type SpacesService struct {
-	database    *db.Database
-	agent       *serveragent.Service
-	library     *SpaceLibraryService
-	avatarStore LibraryObjectStore
-	aead        cipher.AEAD
-	keyVer      int16
-	workers     sync.Once
+	noteCollab        NoteCollabConfig
+	database          *db.Database
+	agent             *serveragent.Service
+	library           *SpaceLibraryService
+	avatarStore       LibraryObjectStore
+	aead              cipher.AEAD
+	keyVer            int16
+	workers           sync.Once
+	invitationSender  mistyemail.SpaceInvitationSender
+	invitationBaseURL string
+}
+
+func (s *SpacesService) SetInvitationSender(
+	sender mistyemail.SpaceInvitationSender,
+	baseURL string,
+) {
+	s.invitationSender = sender
+	s.invitationBaseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 }
 
 func NewSpacesService(database *db.Database, agent *serveragent.Service, encryptionKey string) (*SpacesService, error) {
@@ -174,6 +187,7 @@ func writeSpaceError(w http.ResponseWriter, err error) {
 	case errors.Is(err, db.ErrSpaceInvalid), errors.Is(err, db.ErrLibraryInvalid):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_request"})
 	default:
+		log.Printf("spaces API internal error: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "internal_error"})
 	}
 }
@@ -188,22 +202,22 @@ func (s *SpacesService) Spaces() http.HandlerFunc {
 		case http.MethodGet:
 			entitlements, err := s.database.EntitlementsForUser(r.Context(), userID)
 			if err != nil {
-				writeSpaceError(w, err)
+				writeSpaceError(w, fmt.Errorf("load entitlements: %w", err))
 				return
 			}
 			spaces, err := s.database.ListSpaces(r.Context(), userID)
 			if err != nil {
-				writeSpaceError(w, err)
+				writeSpaceError(w, fmt.Errorf("list spaces: %w", err))
 				return
 			}
 			invites, err := s.database.IncomingSpaceInvites(r.Context(), userID)
 			if err != nil {
-				writeSpaceError(w, err)
+				writeSpaceError(w, fmt.Errorf("list incoming space invites: %w", err))
 				return
 			}
 			storage, err := s.database.OwnerStorageUsage(r.Context(), userID)
 			if err != nil {
-				writeSpaceError(w, err)
+				writeSpaceError(w, fmt.Errorf("load owner storage usage: %w", err))
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"spaces": spaces, "invitations": invites,
@@ -211,17 +225,84 @@ func (s *SpacesService) Spaces() http.HandlerFunc {
 				"owner_storage": storage})
 		case http.MethodPost:
 			var body struct {
-				Name string `json:"name"`
+				Name                 string   `json:"name"`
+				TemplateID           string   `json:"template_id"`
+				IntegrationProviders []string `json:"integration_providers"`
 			}
 			if decodeJSON(w, r, &body) != nil {
 				return
 			}
-			space, err := s.database.CreateSpace(r.Context(), userID, body.Name)
+			result, err := s.database.CreateSpaceWithTemplateIdempotent(
+				r.Context(), userID, body.Name, body.TemplateID, body.IntegrationProviders,
+				r.Header.Get("Idempotency-Key"),
+			)
 			if err != nil {
 				writeSpaceError(w, err)
 				return
 			}
-			writeJSON(w, http.StatusCreated, space)
+			writeJSON(w, http.StatusCreated, result)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+func (s *SpacesService) SpaceTemplates() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		providers := []providerOAuthAvailability{}
+		for _, provider := range providerOAuthAvailabilityCatalog() {
+			if provider.Provider != "google" && provider.Provider != "discord" && provider.Provider != "notion" {
+				continue
+			}
+			if provider.Provider == "discord" && discordBotToken() == "" {
+				provider.Configured = false
+			}
+			providers = append(providers, provider)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"templates": db.BuiltInSpaceTemplates(),
+			"providers": providers,
+		})
+	}
+}
+
+func (s *SpacesService) SpaceSetup() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := authenticatedUser(w, r, s.database)
+		if !ok {
+			return
+		}
+		spaceID := chi.URLParam(r, "spaceID")
+		switch r.Method {
+		case http.MethodGet:
+			setup, err := s.database.SpaceSetup(r.Context(), userID, spaceID)
+			if err != nil {
+				writeSpaceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, setup)
+		case http.MethodPatch:
+			var body struct {
+				Provider string `json:"provider"`
+				Status   string `json:"status"`
+			}
+			if decodeJSON(w, r, &body) != nil {
+				return
+			}
+			if err := s.database.SetSpaceSetupProviderStatus(r.Context(), userID, spaceID, body.Provider, body.Status); err != nil {
+				writeSpaceError(w, err)
+				return
+			}
+			setup, err := s.database.SpaceSetup(r.Context(), userID, spaceID)
+			if err != nil {
+				writeSpaceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, setup)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
@@ -296,18 +377,142 @@ func (s *SpacesService) Invite() http.HandlerFunc {
 		if !ok {
 			return
 		}
+		spaceID := chi.URLParam(r, "spaceID")
+		if r.Method == http.MethodGet {
+			invitations, err := s.database.PendingSpaceInvitations(r.Context(), userID, spaceID)
+			if err != nil {
+				writeSpaceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"invitations": invitations})
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		var body struct {
 			Email string `json:"email"`
 		}
 		if decodeJSON(w, r, &body) != nil {
 			return
 		}
-		invite, err := s.database.InviteToSpace(r.Context(), userID, chi.URLParam(r, "spaceID"), body.Email)
+		token, err := security.GenerateSecureToken()
 		if err != nil {
 			writeSpaceError(w, err)
 			return
 		}
+		invite, err := s.database.InviteToSpaceWithToken(
+			r.Context(), userID, spaceID, body.Email, security.HashToken(token),
+		)
+		if err != nil {
+			writeSpaceError(w, err)
+			return
+		}
+		status := s.deliverSpaceInvitation(r.Context(), invite, token)
+		_ = s.database.SetSpaceInvitationDelivery(r.Context(), invite.ID, status)
+		invite.DeliveryStatus = status
 		writeJSON(w, http.StatusCreated, invite)
+	}
+}
+
+func (s *SpacesService) SpaceInvitationItem() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := authenticatedUser(w, r, s.database)
+		if !ok {
+			return
+		}
+		spaceID, inviteID := chi.URLParam(r, "spaceID"), chi.URLParam(r, "inviteID")
+		if r.Method == http.MethodDelete {
+			if err := s.database.RevokeSpaceInvitation(r.Context(), userID, spaceID, inviteID); err != nil {
+				writeSpaceError(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		token, err := security.GenerateSecureToken()
+		if err != nil {
+			writeSpaceError(w, err)
+			return
+		}
+		invite, err := s.database.RefreshSpaceInvitation(
+			r.Context(), userID, spaceID, inviteID, security.HashToken(token),
+		)
+		if err != nil {
+			writeSpaceError(w, err)
+			return
+		}
+		status := s.deliverSpaceInvitation(r.Context(), invite, token)
+		_ = s.database.SetSpaceInvitationDelivery(r.Context(), invite.ID, status)
+		invite.DeliveryStatus = status
+		writeJSON(w, http.StatusOK, invite)
+	}
+}
+
+func (s *SpacesService) deliverSpaceInvitation(
+	ctx context.Context,
+	invite *db.SpaceInvitation,
+	token string,
+) string {
+	if s.invitationSender == nil || s.invitationBaseURL == "" {
+		return "failed"
+	}
+	link := s.invitationBaseURL + "/" + url.PathEscape(token)
+	if err := s.invitationSender.SendSpaceInvitationEmail(
+		ctx, invite.InvitedEmail, invite.InviterName, invite.SpaceName, link,
+	); err != nil {
+		return "failed"
+	}
+	return "sent"
+}
+
+func (s *SpacesService) SpaceInvitationToken() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := strings.TrimSpace(chi.URLParam(r, "token"))
+		if token == "" {
+			writeSpaceError(w, db.ErrSpaceInviteNotFound)
+			return
+		}
+		tokenHash := security.HashToken(token)
+		switch r.Method {
+		case http.MethodGet:
+			preview, err := s.database.SpaceInvitationPreview(r.Context(), tokenHash)
+			if err != nil {
+				writeSpaceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, preview)
+		case http.MethodPost:
+			userID, ok := authenticatedUser(w, r, s.database)
+			if !ok {
+				return
+			}
+			var body struct {
+				Accept bool `json:"accept"`
+			}
+			if decodeJSON(w, r, &body) != nil {
+				return
+			}
+			space, err := s.database.RespondToSpaceInviteToken(
+				r.Context(), userID, tokenHash, body.Accept,
+			)
+			if err != nil {
+				writeSpaceError(w, err)
+				return
+			}
+			if !body.Accept {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			writeJSON(w, http.StatusOK, space)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
 	}
 }
 

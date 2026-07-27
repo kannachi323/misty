@@ -292,8 +292,15 @@ func (s *AIService) SendMessage() http.HandlerFunc {
 			writeJSON(w, http.StatusNotFound, map[string]string{"code": "document_agents_disabled"})
 			return
 		}
-		if _, err := s.database.ValidateAgentSessionAccess(r.Context(), userID, sessionID); err != nil {
+		bound, err := s.database.ValidateAgentSessionAccess(r.Context(), userID, sessionID)
+		if err != nil {
 			writeAISessionAccessError(w, err)
+			return
+		}
+		// The session's Space comes from the session row, never from body.SpaceID.
+		// A client that sends a different Space is ignored rather than trusted.
+		if err := s.applySpaceContext(r.Context(), userID, sessionID, bound, &body); err != nil {
+			writeSpaceError(w, err)
 			return
 		}
 		release, ok := s.acquireProviderCall(w, userID)
