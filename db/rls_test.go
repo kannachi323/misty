@@ -32,6 +32,7 @@ func TestTablesHaveRowLevelSecurityEnabled(t *testing.T) {
 		"space_members",
 		"space_invitations",
 		"space_messages",
+		"space_message_reactions",
 		"space_conversations",
 		"space_conversation_members",
 		"space_nodes",

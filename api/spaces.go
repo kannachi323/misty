@@ -29,7 +29,7 @@ import (
 )
 
 type SpacesService struct {
-	noteCollab        NoteCollabConfig
+	journalCollab     JournalCollabConfig
 	database          *db.Database
 	agent             *serveragent.Service
 	library           *SpaceLibraryService
@@ -925,6 +925,32 @@ func (s *SpacesService) Message() http.HandlerFunc {
 			return
 		}
 		message, err := s.database.UpdateSpaceMessage(r.Context(), userID, spaceID, messageID, body.Content, body.FileNodeIDs)
+		if err != nil {
+			writeSpaceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, message)
+	}
+}
+
+func (s *SpacesService) MessageReaction() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := authenticatedUser(w, r, s.database)
+		if !ok {
+			return
+		}
+		spaceID := chi.URLParam(r, "spaceID")
+		messageID := chi.URLParam(r, "messageID")
+		emoji := chi.URLParam(r, "emoji")
+		var (
+			message *db.SpaceMessage
+			err     error
+		)
+		if r.Method == http.MethodDelete {
+			message, err = s.database.RemoveSpaceMessageReaction(r.Context(), userID, spaceID, messageID, emoji)
+		} else {
+			message, err = s.database.AddSpaceMessageReaction(r.Context(), userID, spaceID, messageID, emoji)
+		}
 		if err != nil {
 			writeSpaceError(w, err)
 			return
