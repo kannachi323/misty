@@ -22,7 +22,8 @@ Public beta is ready only when:
   **Owner: Codex**
 - [x] No known path can acknowledge user edits that will not be persisted.
   **Owner: Codex**
-- [ ] Signed macOS and Windows release artifacts install and update successfully.
+- [ ] Signed macOS artifacts and the Windows installer install and update
+  successfully.
   **Owner: Codex + Matt**
 - [ ] Production API, PostgreSQL, R2, and Journal Worker have health monitoring,
   alerts, backups, and rehearsed recovery procedures. **Owner: Codex + Matt**
@@ -118,8 +119,8 @@ Public beta is ready only when:
 - [x] Test duplicate uploads, deduplication repair, deletion, expired signed
   URLs, checksum failure, offline retry, and concurrent finalization.
   **Owner: Codex**
-- [ ] Test direct upload and download from signed packaged Mac and Windows
-  applications. **Owner: Codex + Matt**
+- [ ] Test direct upload and download from packaged Mac and Windows applications.
+  **Owner: Codex + Matt**
 
 ## 5. Application and API security
 
@@ -177,6 +178,8 @@ Public beta is ready only when:
   **Owner: Codex + Matt**
 - [ ] Authenticode sign the Windows executable and NSIS/MSI installers.
   **Owner: Codex + Matt**
+  Deferred for the early beta; label Windows downloads as unsigned until this
+  is complete.
 - [ ] Verify macOS Gatekeeper and Windows SmartScreen behavior on clean
   machines. **Owner: Matt**
 - [ ] Test fresh install, upgrade, failed update, rollback/reinstall, and
