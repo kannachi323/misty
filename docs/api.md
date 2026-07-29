@@ -2,7 +2,7 @@
 
 The canonical Spaces → Agents → Workflows contracts, privacy model, workflow-version semantics, and endpoint index are documented in [agent-architecture.md](agent-architecture.md).
 
-All routes are mounted at the root path and again under `/api`, except `/stripe/webhook`, which is root-only for Stripe.
+All routes are mounted at the root path and again under `/api`, except the Stripe webhook, which is root-only at `STRIPE_WEBHOOK_PATH` (default `/stripe/webhook`).
 
 JSON request bodies are limited to 8 KiB unless noted. Unknown fields and trailing JSON are rejected on handlers that use the shared decoder. Authenticated endpoints accept either the `misty_session` cookie or an `Authorization: Bearer <token>` header.
 
@@ -17,6 +17,14 @@ Run the full suite with:
 When explicit `TEST_DB_*` variables are absent and the target DB host is local, the script starts `docker compose` Postgres, recreates `misty_server_test`, applies `db/migrations`, and then runs `go test ./... -count=1`.
 
 Set `BOOTSTRAP_TEST_DB=0` to disable Docker/bootstrap behavior, or `BOOTSTRAP_TEST_DB=1` to force it.
+
+For local Stripe forwarding, keep `PORT` and `STRIPE_WEBHOOK_PATH` in `.env`
+and start the Stripe CLI with the same values:
+
+```bash
+stripe listen \
+  --forward-to "http://localhost:${PORT:-8081}${STRIPE_WEBHOOK_PATH:-/stripe/webhook}"
+```
 
 To use an existing Postgres instance, set:
 
@@ -120,13 +128,13 @@ Retired. Returns HTTP `410` with `code: "trial_checkout_required"`; trials begin
 
 `POST /billing/checkout-session`
 
-Body: `{ "tier": "pro", "interval": "month" | "year" }`
+Body: `{ "tier": "pro" | "max", "interval": "month" | "year" }`
 
-Returns a Stripe subscription Checkout `{ "url": string }`. Eligible accounts receive a one-time 14-day trial; a payment method is required and the subscription auto-renews. Existing active subscribers must use the Customer Portal.
+Returns a Stripe subscription Checkout `{ "url": string }`. Pro is $8/month or $79/year; Max is $19/month or $189/year. Eligible accounts receive a one-time 14-day Pro trial; Max does not receive an automatic trial. A payment method is required for a Pro trial and subscriptions auto-renew. Existing active subscribers must use the Customer Portal.
 
 `POST /billing/credit-checkout-session`
 
-Retired. Returns HTTP `410` with `code: "retired_product"`. Misty has no hosted-AI add-ons or automatic overages.
+Retired. Returns HTTP `410` with `code: "retired_product"`. Misty has no AI agent usage add-ons or automatic overages.
 
 `POST /billing/portal-session`
 
@@ -134,20 +142,24 @@ Returns a Stripe Customer Portal `{ "url": string }` for an authenticated Stripe
 
 `GET /billing/usage`
 
-Returns `plan`, owner-pooled `storage` usage and limits, `hosted_ai.used_ratio` and Monday reset time, plus trial/subscription state when applicable. Internal amounts, provider rates, and ledger entries are not exposed.
+Returns `plan`, owner-pooled `storage` usage and limits, and customer-safe `agent_usage` fields: percentage used, availability/paused state, weekly reset time, and plan. The legacy `hosted_ai` response field remains temporarily for client compatibility. Internal allowance units, costs, provider rates, and ledger entries are never exposed.
 
-`POST /stripe/webhook`
+`POST ${STRIPE_WEBHOOK_PATH:-/stripe/webhook}`
 
 Stripe-signed only. Handled event types:
 
-- `checkout.session.completed`: acknowledges Pro subscription Checkout; retired one-time products are ignored.
-- `customer.subscription.created|updated|deleted`: persists canonical state and grants Pro while active or trialing, including through cancellation's effective end.
+- `checkout.session.completed|checkout.session.async_payment_succeeded`: closes the guarded Checkout attempt and retrieves the canonical Stripe subscription as a recovery path when its subscription webhook is delayed; retired one-time products are ignored.
+- `checkout.session.expired`: releases an abandoned Checkout attempt. Local wall-clock expiry alone never releases it, because a delayed completion event must not permit a second subscription.
+- `customer.subscription.created|updated|deleted`: validates subscription metadata against one of the four configured recurring Price IDs, persists canonical state, and grants Pro or Max while active or trialing, including through cancellation's effective end.
+- `invoice.paid|invoice.payment_failed`: records the verified subscription lifecycle event without creating overages.
 
-Replay behavior is idempotent. Subscription state is derived from the latest Stripe event and period end.
+Replay behavior is idempotent, concurrent Checkout creation is guarded per user, and older or ambiguous events cannot restore paid access over a newer non-paid state. Subscribe the Stripe endpoint to every event listed above.
+
+The server also performs a read-only Stripe subscription reconciliation on startup and every 15 minutes. It never creates or changes a Stripe charge, invoice, or subscription. Retrieval failures use exponential retry; paid access is retained for a 72-hour grace period after the last recorded billing period, then falls back locally to Basic while the Stripe subscription remains blocked from replacement. A later successful retrieval restores the canonical entitlement.
 
 `POST /ai/complete`
 
-Authenticated managed completion used by AI automation nodes. It consumes the requesting member's shared weekly hosted-AI pool and returns `text`, automatic-routing metadata, `hosted_ai_used_ratio`, and `hosted_ai_reset_at`. Managed AI endpoints return structured HTTP `402` with `code: "hosted_ai_limit_reached"` when a reservation cannot be funded.
+Authenticated managed completion used by AI automation nodes. It consumes the requesting person's weekly AI agent usage and returns `text`, automatic-routing metadata, usage percentage, and reset time. Managed AI endpoints return structured HTTP `402` with `code: "hosted_ai_limit_reached"` when new agent-powered work is paused until reset or upgrade.
 
 ## Waitlist
 

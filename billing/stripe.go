@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"github.com/kannachi323/misty/server/telemetry"
 	"github.com/stripe/stripe-go/v82"
 	paymentintentapi "github.com/stripe/stripe-go/v82/paymentintent"
+	subscriptionapi "github.com/stripe/stripe-go/v82/subscription"
 )
 
 const (
@@ -80,20 +82,23 @@ type disputeEvent struct {
 }
 
 type ChargeIDFetcher func(paymentIntentID string) (string, error)
+type SubscriptionFetcher func(subscriptionID string) (*stripe.Subscription, error)
 
 type StripeService struct {
-	database      *db.Database
-	fetchChargeID ChargeIDFetcher
-	telemetry     telemetry.Client
+	database          *db.Database
+	fetchChargeID     ChargeIDFetcher
+	fetchSubscription SubscriptionFetcher
+	telemetry         telemetry.Client
 }
 
 type StripeOption func(*StripeService)
 
 func NewStripeService(database *db.Database, opts ...StripeOption) *StripeService {
 	service := &StripeService{
-		database:      database,
-		fetchChargeID: fetchChargeIDFromStripe,
-		telemetry:     telemetry.NoopClient{},
+		database:          database,
+		fetchChargeID:     fetchChargeIDFromStripe,
+		fetchSubscription: fetchSubscriptionFromStripe,
+		telemetry:         telemetry.NoopClient{},
 	}
 	for _, opt := range opts {
 		opt(service)
@@ -117,6 +122,123 @@ func WithChargeIDFetcher(fn ChargeIDFetcher) StripeOption {
 	}
 }
 
+func WithSubscriptionFetcher(fn SubscriptionFetcher) StripeOption {
+	return func(service *StripeService) {
+		if fn != nil {
+			service.fetchSubscription = fn
+		}
+	}
+}
+
+type SubscriptionReconcileReport struct {
+	Checked             int
+	Updated             int
+	Failed              int
+	EntitlementsExpired int
+}
+
+func (service *StripeService) ReconcileSubscriptions(
+	ctx context.Context,
+	now time.Time,
+	limit int,
+) (SubscriptionReconcileReport, error) {
+	var report SubscriptionReconcileReport
+	subscriptions, err := service.database.ListStripeSubscriptionsDueForReconciliation(
+		ctx,
+		now,
+		limit,
+	)
+	if err != nil {
+		return report, err
+	}
+	for _, local := range subscriptions {
+		if err := ctx.Err(); err != nil {
+			return report, err
+		}
+		report.Checked++
+		canonical, fetchErr := service.fetchSubscription(local.StripeSubscriptionID)
+		if fetchErr != nil || canonical == nil {
+			report.Failed++
+			failure := "Stripe returned an empty subscription"
+			if fetchErr != nil {
+				failure = fetchErr.Error()
+			}
+			retryAt := now.Add(subscriptionReconcileBackoff(local.ReconcileFailures))
+			if markErr := service.database.MarkStripeSubscriptionReconcileFailed(
+				ctx,
+				local.StripeSubscriptionID,
+				failure,
+				retryAt,
+			); markErr != nil {
+				return report, markErr
+			}
+			continue
+		}
+		event, conversionErr := subscriptionEventFromStripe(canonical)
+		if conversionErr != nil {
+			report.Failed++
+			retryAt := now.Add(subscriptionReconcileBackoff(local.ReconcileFailures))
+			if markErr := service.database.MarkStripeSubscriptionReconcileFailed(
+				ctx,
+				local.StripeSubscriptionID,
+				conversionErr.Error(),
+				retryAt,
+			); markErr != nil {
+				return report, markErr
+			}
+			continue
+		}
+		if applyErr := service.handleSubscriptionChanged(
+			event,
+			"",
+			time.Time{},
+			false,
+		); applyErr != nil {
+			report.Failed++
+			retryAt := now.Add(subscriptionReconcileBackoff(local.ReconcileFailures))
+			if markErr := service.database.MarkStripeSubscriptionReconcileFailed(
+				ctx,
+				local.StripeSubscriptionID,
+				applyErr.Error(),
+				retryAt,
+			); markErr != nil {
+				return report, markErr
+			}
+			continue
+		}
+		reconcileAt := nextSubscriptionReconcileAt(now, periodEndFromSubscriptionEvent(event))
+		if markErr := service.database.MarkStripeSubscriptionReconciled(
+			ctx,
+			local.StripeSubscriptionID,
+			now,
+			reconcileAt,
+		); markErr != nil {
+			return report, markErr
+		}
+		report.Updated++
+	}
+	expired, err := service.database.ExpireStaleSubscriptionEntitlements(
+		ctx,
+		now.Add(-72*time.Hour),
+		limit,
+	)
+	if err != nil {
+		return report, err
+	}
+	report.EntitlementsExpired = expired
+	return report, nil
+}
+
+func subscriptionReconcileBackoff(priorFailures int) time.Duration {
+	if priorFailures < 0 {
+		priorFailures = 0
+	}
+	if priorFailures > 5 {
+		priorFailures = 5
+	}
+	return 15 * time.Minute * time.Duration(1<<priorFailures)
+}
+
 func (service *StripeService) HandleWebhookEvent(eventType string, payload json.RawMessage) {
 	if err := service.HandleWebhookEventWithID("", eventType, payload); err != nil {
 		log.Printf("Stripe webhook %s failed: %v", eventType, err)
@@ -124,6 +246,14 @@ func (service *StripeService) HandleWebhookEvent(eventType string, payload json.
 }
 
 func (service *StripeService) HandleWebhookEventWithID(eventID, eventType string, payload json.RawMessage) error {
+	return service.HandleWebhookEventAt(eventID, eventType, time.Time{}, payload)
+}
+
+func (service *StripeService) HandleWebhookEventAt(
+	eventID, eventType string,
+	eventCreatedAt time.Time,
+	payload json.RawMessage,
+) error {
 	if eventID != "" {
 		processed, err := service.database.StripeEventProcessed(eventID)
 		if err != nil {
@@ -143,12 +273,28 @@ func (service *StripeService) HandleWebhookEventWithID(eventID, eventType string
 		if err := service.handleCheckout(&session); err != nil {
 			return err
 		}
+	case "checkout.session.expired":
+		var session checkoutCompletedEvent
+		if err := json.Unmarshal(payload, &session); err != nil {
+			return err
+		}
+		if err := service.database.ExpireSubscriptionCheckoutBySessionID(
+			context.Background(),
+			session.ID,
+		); err != nil {
+			return err
+		}
 	case "customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted":
 		var subscription subscriptionEvent
 		if err := json.Unmarshal(payload, &subscription); err != nil {
 			return err
 		}
-		if err := service.handleSubscriptionChanged(&subscription); err != nil {
+		if err := service.handleSubscriptionChanged(
+			&subscription,
+			eventID,
+			eventCreatedAt,
+			true,
+		); err != nil {
 			return err
 		}
 	case "invoice.paid", "invoice.payment_failed":
@@ -185,8 +331,30 @@ func (service *StripeService) HandleWebhookEventWithID(eventID, eventType string
 func (service *StripeService) handleCheckout(session *checkoutCompletedEvent) error {
 	kind := strings.TrimSpace(session.Metadata["kind"])
 	if session.Mode == "subscription" || kind == "subscription" {
-		// Entitlement is applied from customer.subscription.* where Stripe supplies canonical status and period data.
-		return nil
+		if err := service.database.CompleteSubscriptionCheckoutBySessionID(
+			context.Background(),
+			session.ID,
+		); err != nil {
+			return err
+		}
+		if strings.TrimSpace(session.Subscription) == "" {
+			// customer.subscription.* remains the normal entitlement path.
+			return nil
+		}
+		canonical, err := service.fetchSubscription(session.Subscription)
+		if err != nil {
+			return err
+		}
+		event, err := subscriptionEventFromStripe(canonical)
+		if err != nil {
+			return err
+		}
+		return service.handleSubscriptionChanged(
+			event,
+			"",
+			time.Time{},
+			false,
+		)
 	}
 	// One-time lifetime products and credit packs are retired. Acknowledging
 	// stale events prevents Stripe retries without granting an entitlement.
@@ -194,11 +362,18 @@ func (service *StripeService) handleCheckout(session *checkoutCompletedEvent) er
 	return nil
 }
 
-func (service *StripeService) handleSubscriptionChanged(event *subscriptionEvent) error {
+func (service *StripeService) handleSubscriptionChanged(
+	event *subscriptionEvent,
+	sourceEventID string,
+	sourceEventCreatedAt time.Time,
+	rejectOlder bool,
+) error {
 	userID := strings.TrimSpace(event.Metadata["user_id"])
 	licenseID := strings.TrimSpace(event.Metadata["license_id"])
 	tier, ok := tierFromMetadata(event.Metadata["tier"])
-	if userID == "" || licenseID == "" || !ok || !validPaidTier(tier) {
+	metadataInterval := BillingInterval(strings.ToLower(strings.TrimSpace(event.Metadata["interval"])))
+	if userID == "" || licenseID == "" || !ok || !validPaidTier(tier) ||
+		!validInterval(metadataInterval) || strings.TrimSpace(event.Metadata["kind"]) != "subscription" {
 		return errors.New("subscription metadata is invalid")
 	}
 	user, err := service.database.GetUserByID(userID)
@@ -208,14 +383,10 @@ func (service *StripeService) handleSubscriptionChanged(event *subscriptionEvent
 	if user == nil || user.LicenseID != licenseID {
 		return errors.New("subscription license does not match user")
 	}
-	interval := strings.TrimSpace(event.Metadata["interval"])
-	priceID := ""
-	if len(event.Items.Data) > 0 {
-		priceID = event.Items.Data[0].Price.ID
-		if itemInterval := strings.TrimSpace(event.Items.Data[0].Price.Recurring.Interval); itemInterval != "" {
-			interval = itemInterval
-		}
+	if len(event.Items.Data) != 1 {
+		return errors.New("subscription must contain exactly one configured price")
 	}
+	priceID := strings.TrimSpace(event.Items.Data[0].Price.ID)
 	catalogTier, catalogInterval, catalogOK := configuredSubscriptionPrice(priceID)
 	if !catalogOK {
 		return errors.New("subscription price is not in the configured catalog")
@@ -223,8 +394,14 @@ func (service *StripeService) handleSubscriptionChanged(event *subscriptionEvent
 	if catalogTier != tier {
 		return errors.New("subscription tier metadata does not match the Stripe price")
 	}
+	if catalogInterval != metadataInterval {
+		return errors.New("subscription interval metadata does not match the Stripe price")
+	}
+	if itemInterval := strings.ToLower(strings.TrimSpace(event.Items.Data[0].Price.Recurring.Interval)); itemInterval != "" && itemInterval != string(catalogInterval) {
+		return errors.New("subscription recurring interval does not match the Stripe price")
+	}
 	tier = catalogTier
-	interval = string(catalogInterval)
+	interval := string(catalogInterval)
 	var periodEnd, canceledAt *time.Time
 	if event.CurrentPeriodEnd > 0 {
 		value := time.Unix(event.CurrentPeriodEnd, 0).UTC()
@@ -237,16 +414,37 @@ func (service *StripeService) handleSubscriptionChanged(event *subscriptionEvent
 		value := time.Unix(event.CanceledAt, 0).UTC()
 		canceledAt = &value
 	}
+	status := strings.ToLower(strings.TrimSpace(event.Status))
+	if db.SubscriptionAllowsPaidAccess(status) && periodEnd == nil {
+		return errors.New("paid Stripe subscription has no billing period end")
+	}
+	var sourceCreated *time.Time
+	if !sourceEventCreatedAt.IsZero() {
+		value := sourceEventCreatedAt.UTC()
+		sourceCreated = &value
+	}
+	now := time.Now().UTC()
 	previous, err := service.database.GetStripeSubscriptionByStripeID(event.ID)
 	if err != nil {
 		return err
 	}
 	subscription := &db.StripeSubscription{UserID: userID, LicenseID: licenseID, StripeSubscriptionID: event.ID,
 		StripeCustomerID: event.Customer, StripePriceID: priceID, Tier: tier, BillingInterval: interval,
-		Status: strings.ToLower(strings.TrimSpace(event.Status)), CurrentPeriodEnd: periodEnd,
-		CancelAtPeriodEnd: event.CancelAtPeriodEnd, CanceledAt: canceledAt}
-	if err := service.database.UpsertStripeSubscription(subscription); err != nil {
+		Status: status, CurrentPeriodEnd: periodEnd,
+		CancelAtPeriodEnd: event.CancelAtPeriodEnd, CanceledAt: canceledAt,
+		SourceEventCreatedAt: sourceCreated, SourceEventID: sourceEventID,
+		ReconcileAfter: nextSubscriptionReconcileAt(now, periodEnd)}
+	applied := true
+	if rejectOlder {
+		applied, err = service.database.UpsertStripeSubscriptionFromWebhook(subscription)
+	} else {
+		err = service.database.UpsertStripeSubscription(subscription)
+	}
+	if err != nil {
 		return err
+	}
+	if !applied {
+		return nil
 	}
 	if err := service.database.ApplyEffectiveSubscriptionEntitlement(subscription); err != nil {
 		return err
@@ -275,6 +473,21 @@ func (service *StripeService) handleSubscriptionChanged(event *subscriptionEvent
 	}
 	_, err = service.database.GetOrCreateCreditWallet(userID, effectiveLicense.Tier, time.Now())
 	return err
+}
+
+func nextSubscriptionReconcileAt(now time.Time, periodEnd *time.Time) time.Time {
+	next := now.UTC().Add(6 * time.Hour)
+	if periodEnd == nil {
+		return next
+	}
+	nearPeriodEnd := periodEnd.UTC().Add(15 * time.Minute)
+	if nearPeriodEnd.Before(now) {
+		nearPeriodEnd = now.UTC().Add(15 * time.Minute)
+	}
+	if nearPeriodEnd.Before(next) {
+		return nearPeriodEnd
+	}
+	return next
 }
 
 func (service *StripeService) handleInvoicePaid(invoice *invoiceEvent) error {
@@ -312,20 +525,20 @@ func telemetryInterval(interval string) string {
 }
 
 func configuredSubscriptionPrice(priceID string) (db.Tier, BillingInterval, bool) {
-	prices := []struct {
-		env      string
-		tier     db.Tier
-		interval BillingInterval
-	}{
-		{"STRIPE_PRICE_PRO_MONTHLY", db.TierPro, BillingIntervalMonth},
-		{"STRIPE_PRICE_PRO_YEARLY", db.TierPro, BillingIntervalYear},
-	}
-	for _, price := range prices {
-		if configured := strings.TrimSpace(os.Getenv(price.env)); configured != "" && configured == strings.TrimSpace(priceID) {
-			return price.tier, price.interval, true
+	var matched *priceKey
+	for _, definition := range subscriptionPriceDefinitions {
+		if configured := strings.TrimSpace(os.Getenv(definition.env)); configured != "" && configured == strings.TrimSpace(priceID) {
+			if matched != nil {
+				return "", "", false
+			}
+			key := definition.key
+			matched = &key
 		}
 	}
-	return "", "", false
+	if matched == nil {
+		return "", "", false
+	}
+	return matched.tier, matched.interval, true
 }
 
 func (service *StripeService) handleCheckoutCompleted(session *checkoutCompletedEvent) {
@@ -486,12 +699,10 @@ func (service *StripeService) analyticsEnabled(userID string) bool {
 
 func tierFromMetadata(value string) (db.Tier, bool) {
 	switch db.Tier(strings.ToLower(strings.TrimSpace(value))) {
-	case db.TierPersonal:
-		return db.TierPro, true
 	case db.TierPro:
 		return db.TierPro, true
 	case db.TierMax:
-		return db.TierPro, true
+		return db.TierMax, true
 	default:
 		return "", false
 	}
@@ -506,6 +717,76 @@ func legacyTierFromMetadata(value string) (db.Tier, bool) {
 	default:
 		return "", false
 	}
+}
+
+func subscriptionEventFromStripe(
+	subscription *stripe.Subscription,
+) (*subscriptionEvent, error) {
+	if subscription == nil || strings.TrimSpace(subscription.ID) == "" {
+		return nil, errors.New("Stripe returned an invalid subscription")
+	}
+	if subscription.Customer == nil ||
+		strings.TrimSpace(subscription.Customer.ID) == "" {
+		return nil, errors.New("Stripe subscription has no customer")
+	}
+	event := &subscriptionEvent{
+		ID:                subscription.ID,
+		Customer:          subscription.Customer.ID,
+		Status:            string(subscription.Status),
+		Metadata:          subscription.Metadata,
+		CancelAtPeriodEnd: subscription.CancelAtPeriodEnd,
+		CanceledAt:        subscription.CanceledAt,
+	}
+	if subscription.Items == nil || len(subscription.Items.Data) != 1 {
+		return nil, errors.New("Stripe subscription must contain exactly one item")
+	}
+	item := subscription.Items.Data[0]
+	if item == nil || item.Price == nil {
+		return nil, errors.New("Stripe subscription item has no price")
+	}
+	itemEvent := struct {
+		CurrentPeriodEnd int64 `json:"current_period_end"`
+		Price            struct {
+			ID        string `json:"id"`
+			Recurring struct {
+				Interval string `json:"interval"`
+			} `json:"recurring"`
+		} `json:"price"`
+	}{}
+	itemEvent.CurrentPeriodEnd = item.CurrentPeriodEnd
+	itemEvent.Price.ID = item.Price.ID
+	if item.Price.Recurring != nil {
+		itemEvent.Price.Recurring.Interval = string(item.Price.Recurring.Interval)
+	}
+	event.Items.Data = append(event.Items.Data, itemEvent)
+	return event, nil
+}
+
+func periodEndFromSubscriptionEvent(event *subscriptionEvent) *time.Time {
+	if event == nil {
+		return nil
+	}
+	raw := event.CurrentPeriodEnd
+	if raw <= 0 && len(event.Items.Data) > 0 {
+		raw = event.Items.Data[0].CurrentPeriodEnd
+	}
+	if raw <= 0 {
+		return nil
+	}
+	value := time.Unix(raw, 0).UTC()
+	return &value
+}
+
+func fetchSubscriptionFromStripe(subscriptionID string) (*stripe.Subscription, error) {
+	secretKey := strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY"))
+	if secretKey == "" {
+		return nil, errors.New("STRIPE_SECRET_KEY is required for subscription reconciliation")
+	}
+	if strings.TrimSpace(subscriptionID) == "" {
+		return nil, errors.New("Stripe subscription id is required")
+	}
+	stripe.Key = secretKey
+	return subscriptionapi.Get(subscriptionID, nil)
 }
 
 func fetchChargeIDFromStripe(paymentIntentID string) (string, error) {

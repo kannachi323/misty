@@ -509,7 +509,7 @@ func writeAIError(w http.ResponseWriter, err error) {
 		writeJSON(w, 499, map[string]any{"code": "request_canceled", "message": "Agent request canceled."})
 	case errors.As(err, &exhausted):
 		writeJSON(w, http.StatusPaymentRequired, map[string]any{
-			"code": "hosted_ai_limit_reached", "message": "Weekly hosted AI usage is fully used.",
+			"code": "hosted_ai_limit_reached", "message": "Your weekly AI agent usage is fully used.",
 			"reset_at": exhausted.ResetAt, "upgrade_available": true,
 		})
 	case errors.Is(err, agent.ErrSessionNotFound):

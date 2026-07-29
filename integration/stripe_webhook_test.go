@@ -68,7 +68,7 @@ func TestStripeSubscriptionLifecycleAndHostedAIAllowance(t *testing.T) {
 		return map[string]any{
 			"id": subscriptionID, "customer": "cus_test", "status": status,
 			"current_period_end": time.Now().Add(30 * 24 * time.Hour).Unix(),
-			"metadata":           map[string]string{"user_id": user.ID, "license_id": user.LicenseID, "tier": "pro", "interval": "month"},
+			"metadata":           map[string]string{"user_id": user.ID, "license_id": user.LicenseID, "tier": "pro", "interval": "month", "kind": "subscription"},
 			"items":              map[string]any{"data": []any{map[string]any{"price": map[string]any{"id": "price_pro", "recurring": map[string]any{"interval": "month"}}}}},
 		}
 	}
@@ -96,6 +96,77 @@ func TestStripeSubscriptionLifecycleAndHostedAIAllowance(t *testing.T) {
 	}
 }
 
+func TestMaxSubscriptionLifecycleAndMetadataValidation(t *testing.T) {
+	database := openIntegrationDatabase(t)
+	secret := requiredStripeWebhookSecret(t)
+	handler := api.StripeWebhookWithService(secret, newTestStripeService(database))
+	t.Setenv("STRIPE_PRICE_MAX_MONTHLY", "price_max")
+	user, err := database.CreateUser("Max Subscriber", "max-subscriber@example.com", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscriptionID := "sub_" + uuid.NewString()
+	event := func(status, metadataTier, metadataInterval string) map[string]any {
+		return map[string]any{
+			"id": subscriptionID, "customer": "cus_max", "status": status,
+			"current_period_end": time.Now().Add(30 * 24 * time.Hour).Unix(),
+			"metadata": map[string]string{
+				"user_id": user.ID, "license_id": user.LicenseID, "tier": metadataTier,
+				"interval": metadataInterval, "kind": "subscription",
+			},
+			"items": map[string]any{"data": []any{map[string]any{
+				"price": map[string]any{"id": "price_max", "recurring": map[string]any{"interval": "month"}},
+			}}},
+		}
+	}
+
+	if rec := sendSignedStripeWebhook(t, handler, secret, "customer.subscription.created", event("active", "pro", "month")); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("tier/price mismatch status = %d, want 500", rec.Code)
+	}
+	license, _ := database.GetLicenseByUserID(user.ID)
+	if license == nil || license.Tier != db.TierBasic {
+		t.Fatalf("mismatched metadata granted entitlement: %#v", license)
+	}
+	if rec := sendSignedStripeWebhook(t, handler, secret, "customer.subscription.created", event("active", "max", "year")); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("interval/price mismatch status = %d, want 500", rec.Code)
+	}
+
+	if rec := sendSignedStripeWebhook(t, handler, secret, "customer.subscription.created", event("trialing", "max", "month")); rec.Code != http.StatusOK {
+		t.Fatalf("trialing Max webhook = %d: %s", rec.Code, rec.Body.String())
+	}
+	license, _ = database.GetLicenseByUserID(user.ID)
+	if license == nil || license.Tier != db.TierMax || license.Status != db.LicenseStatusTrialing {
+		t.Fatalf("trialing Max license = %#v", license)
+	}
+	if rec := sendSignedStripeWebhook(t, handler, secret, "customer.subscription.updated", event("active", "max", "month")); rec.Code != http.StatusOK {
+		t.Fatalf("active Max webhook = %d: %s", rec.Code, rec.Body.String())
+	}
+	license, _ = database.GetLicenseByUserID(user.ID)
+	if license == nil || license.Tier != db.TierMax {
+		t.Fatalf("active Max license = %#v", license)
+	}
+	scheduledCancellation := event("active", "max", "month")
+	scheduledCancellation["cancel_at_period_end"] = true
+	if rec := sendSignedStripeWebhook(t, handler, secret, "customer.subscription.updated", scheduledCancellation); rec.Code != http.StatusOK {
+		t.Fatalf("scheduled Max cancellation webhook = %d: %s", rec.Code, rec.Body.String())
+	}
+	license, _ = database.GetLicenseByUserID(user.ID)
+	if license == nil || license.Tier != db.TierMax {
+		t.Fatalf("scheduled cancellation removed Max early: %#v", license)
+	}
+	wallet, err := database.GetOrCreateHostedAIWallet(user.ID, license.Tier, time.Now())
+	if err != nil || wallet.WeeklyAllowanceMicrousd != db.MaxWeeklyHostedAIAllowance {
+		t.Fatalf("Max wallet = %#v, %v", wallet, err)
+	}
+	if rec := sendSignedStripeWebhook(t, handler, secret, "customer.subscription.updated", event("canceled", "max", "month")); rec.Code != http.StatusOK {
+		t.Fatalf("canceled Max webhook = %d: %s", rec.Code, rec.Body.String())
+	}
+	license, _ = database.GetLicenseByUserID(user.ID)
+	if license == nil || license.Tier != db.TierBasic {
+		t.Fatalf("canceled Max license = %#v", license)
+	}
+}
+
 func requiredStripeWebhookSecret(t *testing.T) string {
 	t.Helper()
 	loadTestEnv()
@@ -110,7 +181,7 @@ func checkoutEventObject(user *db.User, tier db.Tier, sessionID, paymentIntentID
 	return map[string]any{
 		"id": sessionID, "mode": "payment", "payment_intent": paymentIntentID,
 		"customer": customerID, "amount_total": int64(4900), "currency": "USD",
-		"metadata": map[string]string{"user_id": user.ID, "license_id": user.LicenseID, "tier": string(tier)},
+		"metadata":         map[string]string{"user_id": user.ID, "license_id": user.LicenseID, "tier": string(tier)},
 		"customer_details": map[string]any{"email": user.Email},
 	}
 }

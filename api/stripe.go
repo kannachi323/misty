@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	appbilling "github.com/kannachi323/misty/server/billing"
 	"github.com/kannachi323/misty/server/db"
@@ -52,7 +53,16 @@ func StripeWebhookWithService(webhookSecret string, service *appbilling.StripeSe
 			return
 		}
 
-		if err := service.HandleWebhookEventWithID(event.ID, string(event.Type), event.Data.Raw); err != nil {
+		createdAt := time.Time{}
+		if event.Created > 0 {
+			createdAt = time.Unix(event.Created, 0).UTC()
+		}
+		if err := service.HandleWebhookEventAt(
+			event.ID,
+			string(event.Type),
+			createdAt,
+			event.Data.Raw,
+		); err != nil {
 			log.Println("Stripe event processing failed:", err)
 			http.Error(w, "event processing failed", http.StatusInternalServerError)
 			return

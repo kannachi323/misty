@@ -71,7 +71,14 @@ func TestHostedAIPlanChangePreservesConsumedUsage(t *testing.T) {
 	if wallet.WeeklyAllowanceMicrousd != ProWeeklyHostedAIAllowance || wallet.WeeklyRemainingMicrousd != ProWeeklyHostedAIAllowance-20_000 {
 		t.Fatalf("upgrade restored consumed usage: %#v", wallet)
 	}
-	wallet, err = database.GetOrCreateHostedAIWallet(user.ID, TierBasic, now.Add(2*time.Hour))
+	wallet, err = database.GetOrCreateHostedAIWallet(user.ID, TierMax, now.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wallet.WeeklyAllowanceMicrousd != MaxWeeklyHostedAIAllowance || wallet.WeeklyRemainingMicrousd != MaxWeeklyHostedAIAllowance-20_000 {
+		t.Fatalf("Max upgrade restored consumed usage: %#v", wallet)
+	}
+	wallet, err = database.GetOrCreateHostedAIWallet(user.ID, TierBasic, now.Add(3*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,6 +103,33 @@ func TestHostedAILimitAndRetiredPurchases(t *testing.T) {
 	}
 }
 
+func TestAgentUsageDowngradePausesWithoutResettingConsumedUsage(t *testing.T) {
+	database := openTestDatabase(t)
+	user, err := database.CreateUser("Usage Downgrade", "usage-downgrade@example.com", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	consumed := BasicWeeklyAgentAllowance + 1
+	reservation, _, err := database.ReserveHostedAIUsage(user.ID, TierMax, HostedAIMeterAgent, "max-work", consumed, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.SettleHostedAIReservation(reservation.ID, "max-work:settle", HostedAIUsage{ChargeMicrousd: consumed}); err != nil {
+		t.Fatal(err)
+	}
+	wallet, err := database.GetOrCreateHostedAIWallet(user.ID, TierBasic, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wallet.WeeklyRemainingMicrousd != 0 || wallet.UsedRatio() != 1 {
+		t.Fatalf("downgraded wallet = %#v, want paused", wallet)
+	}
+	if _, _, err := database.ReserveHostedAIUsage(user.ID, TierBasic, HostedAIMeterAgent, "blocked-work", 1, now.Add(2*time.Hour)); err == nil {
+		t.Fatal("agent work was not paused after downgrade below consumed usage")
+	}
+}
+
 func TestSubscriptionFallsBackToGrandfatheredTier(t *testing.T) {
 	database := openTestDatabase(t)
 	user, err := database.CreateUser("Lifetime User", "lifetime@example.com", "password123")
@@ -115,8 +149,8 @@ func TestSubscriptionFallsBackToGrandfatheredTier(t *testing.T) {
 		t.Fatal(err)
 	}
 	license, _ := database.GetLicenseByUserID(user.ID)
-	if license == nil || license.Tier != TierPro {
-		t.Fatalf("legacy Max subscription was not normalized: %#v", license)
+	if license == nil || license.Tier != TierMax {
+		t.Fatalf("active Max subscription did not grant Max: %#v", license)
 	}
 	subscription.Status = "canceled"
 	if err := database.UpsertStripeSubscription(subscription); err != nil {
@@ -128,5 +162,29 @@ func TestSubscriptionFallsBackToGrandfatheredTier(t *testing.T) {
 	license, _ = database.GetLicenseByUserID(user.ID)
 	if license == nil || license.Tier != TierPro {
 		t.Fatalf("fallback license = %#v", license)
+	}
+}
+
+func TestTrialingMaxSubscriptionGrantsMaxWithoutChangingPlanPeriodRules(t *testing.T) {
+	database := openTestDatabase(t)
+	user, err := database.CreateUser("Max Trial User", "max-trial@example.com", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	endsAt := time.Now().UTC().Add(7 * 24 * time.Hour)
+	subscription := &StripeSubscription{
+		UserID: user.ID, LicenseID: user.LicenseID, StripeSubscriptionID: "sub_max_trial",
+		StripeCustomerID: "cus_max_trial", StripePriceID: "price_max", Tier: TierMax,
+		BillingInterval: "month", Status: SubscriptionStatusTrialing, CurrentPeriodEnd: &endsAt,
+	}
+	if err := database.ApplyEffectiveSubscriptionEntitlement(subscription); err != nil {
+		t.Fatal(err)
+	}
+	license, err := database.GetLicenseByUserID(user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if license == nil || license.Tier != TierMax || license.Status != LicenseStatusTrialing {
+		t.Fatalf("trialing Max license = %#v", license)
 	}
 }

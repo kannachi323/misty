@@ -647,7 +647,7 @@ func spaceRunFailureFromError(err error) (string, string) {
 	case errors.Is(err, context.Canceled):
 		return "request_canceled", "The run was canceled before it could start."
 	case errors.As(err, &exhausted):
-		return "hosted_ai_limit_reached", "This member has used their weekly hosted AI allowance."
+		return "hosted_ai_limit_reached", "This member has used all of their weekly AI agent usage."
 	case errors.Is(err, db.ErrWorkflowIntegrationRequired):
 		return "integration_required", "The run needs a required Space integration before it can start."
 	case errors.Is(err, db.ErrLibraryForbidden), errors.Is(err, db.ErrSpaceForbidden):

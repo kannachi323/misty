@@ -213,7 +213,7 @@ func (s *SmartLibraryService) Approve(kind string) http.HandlerFunc {
 			_ = s.database.ResetSmartLibraryBatch(batch.ID)
 			var insufficient db.HostedAILimitReachedError
 			if errors.As(err, &insufficient) {
-				response := map[string]any{"code": "hosted_ai_limit_reached", "message": "Weekly hosted AI usage is fully used."}
+				response := map[string]any{"code": "hosted_ai_limit_reached", "message": "Your weekly AI agent usage is fully used."}
 				if usageWallet != nil {
 					response["reset_at"] = usageWallet.ResetAt
 				}
@@ -629,7 +629,7 @@ func (s *SmartLibraryService) CompleteReindex() http.HandlerFunc {
 		if err != nil {
 			var insufficient db.HostedAILimitReachedError
 			if errors.As(err, &insufficient) {
-				response := map[string]any{"code": "hosted_ai_limit_reached", "message": "Weekly hosted AI usage is fully used."}
+				response := map[string]any{"code": "hosted_ai_limit_reached", "message": "Your weekly AI agent usage is fully used."}
 				if usageWallet != nil {
 					response["reset_at"] = usageWallet.ResetAt
 				}

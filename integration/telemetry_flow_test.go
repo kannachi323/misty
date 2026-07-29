@@ -76,7 +76,7 @@ func TestStripeTelemetryIsConsentAwareAndDeduplicated(t *testing.T) {
 	event := map[string]any{
 		"id": "sub_" + uuid.NewString(), "customer": "cus_" + uuid.NewString(), "status": "active",
 		"current_period_end": time.Now().Add(30 * 24 * time.Hour).Unix(),
-		"metadata":           map[string]string{"user_id": user.ID, "license_id": user.LicenseID, "tier": "pro", "interval": "month"},
+		"metadata":           map[string]string{"user_id": user.ID, "license_id": user.LicenseID, "tier": "pro", "interval": "month", "kind": "subscription"},
 		"items":              map[string]any{"data": []any{map[string]any{"price": map[string]any{"id": "price_pro", "recurring": map[string]any{"interval": "month"}}}}},
 	}
 	for index := 0; index < 2; index++ {

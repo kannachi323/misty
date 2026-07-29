@@ -154,12 +154,12 @@ func (db *Database) SetLicenseStateByID(licenseID string, tier Tier, status stri
 	return err
 }
 
-func (db *Database) SetStripeTrialState(licenseID string, expiresAt *time.Time) error {
+func (db *Database) SetStripeTrialState(licenseID string, tier Tier, expiresAt *time.Time) error {
 	now := time.Now().UTC()
 	return db.withRLSContext(context.Background(), serviceRLSSettings(), func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(context.Background(), `UPDATE licenses SET tier=$2,status=$3,expires_at=$4,
 			trial_started_at=COALESCE(trial_started_at,$5),updated_at=NOW() WHERE id=$1`,
-			licenseID, TierPro, LicenseStatusTrialing, expiresAt, now)
+			licenseID, NormalizePlan(tier), LicenseStatusTrialing, expiresAt, now)
 		return err
 	})
 }

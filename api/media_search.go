@@ -143,7 +143,7 @@ func (s *MediaSearchService) IndexChunk() http.HandlerFunc {
 			_ = s.database.FailMediaSearchChunk(userID, body.DeviceID, body.AssetID, body.ChunkIndex, "billing_failed")
 			var insufficient db.HostedAILimitReachedError
 			if errors.As(err, &insufficient) {
-				response := map[string]any{"code": "hosted_ai_limit_reached", "message": "Weekly hosted AI usage is fully used."}
+				response := map[string]any{"code": "hosted_ai_limit_reached", "message": "Your weekly AI agent usage is fully used."}
 				if usageWallet != nil {
 					response["reset_at"] = usageWallet.ResetAt
 				}

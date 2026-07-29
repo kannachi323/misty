@@ -43,6 +43,9 @@ func CreateCheckoutSession(database *db.Database) http.HandlerFunc {
 		case errors.Is(err, appbilling.ErrSubscriptionExists):
 			http.Error(w, "active subscription already exists", http.StatusConflict)
 			return
+		case errors.Is(err, appbilling.ErrCheckoutInProgress):
+			http.Error(w, "subscription checkout already in progress", http.StatusConflict)
+			return
 		case errors.Is(err, appbilling.ErrUserNotFound):
 			http.Error(w, "user not found", http.StatusNotFound)
 			return
@@ -66,7 +69,7 @@ func CreateCreditCheckoutSession(database *db.Database) http.HandlerFunc {
 			http.Error(w, "not authenticated", http.StatusUnauthorized)
 			return
 		}
-		writeJSON(w, http.StatusGone, map[string]any{"code": "retired_product", "message": "Hosted AI add-ons are no longer sold."})
+		writeJSON(w, http.StatusGone, map[string]any{"code": "retired_product", "message": "AI agent usage add-ons are no longer sold."})
 	}
 }
 
@@ -121,8 +124,20 @@ func GetBillingUsage(database *db.Database) http.HandlerFunc {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		payload := map[string]any{"plan": db.NormalizePlan(license.Tier), "storage": storage,
-			"hosted_ai": map[string]any{"used_ratio": wallet.UsedRatio(), "reset_at": wallet.ResetAt}}
+		plan := db.NormalizePlan(license.Tier)
+		available := wallet.Available() > 0
+		payload := map[string]any{
+			"plan": plan, "storage": storage,
+			"agent_usage": map[string]any{
+				"percentage_used": wallet.UsedRatio() * 100,
+				"available":       available,
+				"paused":          !available,
+				"reset_at":        wallet.ResetAt,
+				"plan":            plan,
+			},
+			// Retained for existing clients during the response-field migration.
+			"hosted_ai": map[string]any{"used_ratio": wallet.UsedRatio(), "reset_at": wallet.ResetAt},
+		}
 		if subscription, subscriptionErr := database.GetStripeSubscriptionByUserID(userID); subscriptionErr != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return

@@ -79,27 +79,40 @@ func NewAPIRateLimiter() *APIRateLimiter {
 		defaultGET:   RateLimitPolicy{Limit: 120, Window: time.Minute},
 		defaultWrite: RateLimitPolicy{Limit: 30, Window: time.Minute},
 		routePolicies: map[string]RateLimitPolicy{
-			"POST /register":                                {Limit: 10, Window: time.Minute},
-			"POST /login":                                   {Limit: 20, Window: time.Minute},
-			"POST /waitlist":                                {Limit: 10, Window: time.Minute},
-			"POST /auth/forgot":                             {Limit: 8, Window: time.Minute},
-			"GET /auth/reset/start":                         {Limit: 20, Window: time.Minute},
-			"GET /auth/reset/validate":                      {Limit: 20, Window: time.Minute},
-			"POST /auth/reset":                              {Limit: 10, Window: time.Minute},
-			"POST /billing/trial/start":                     {Limit: 10, Window: time.Minute},
-			"POST /billing/checkout-session":                {Limit: 10, Window: time.Minute},
-			"POST /billing/credit-checkout-session":         {Limit: 10, Window: time.Minute},
-			"POST /billing/portal-session":                  {Limit: 20, Window: time.Minute},
-			"POST /stripe/webhook":                          {Limit: 120, Window: time.Minute},
-			"POST /ai/complete":                             {Limit: 12, Window: time.Minute},
-			"POST /ai/sessions":                             {Limit: 20, Window: time.Hour},
-			"POST /ai/sessions/{sessionID}/messages":        {Limit: 12, Window: time.Minute},
-			"POST /ai/sessions/{sessionID}/tool-results":    {Limit: 30, Window: time.Minute},
-			"GET /ai/sessions/{sessionID}/events":           {Limit: 120, Window: time.Minute},
-			"POST /ai/sessions/{sessionID}/cancel":          {Limit: 30, Window: time.Minute},
-			"POST /ai/media-search/chunks":                  {Limit: 60, Window: time.Minute},
-			"POST /ai/media-search/search":                  {Limit: 60, Window: time.Minute},
-			"POST /spaces/{spaceID}/library/reauthenticate": {Limit: 5, Window: time.Minute},
+			"POST /register":                                            {Limit: 10, Window: time.Minute},
+			"POST /login":                                               {Limit: 20, Window: time.Minute},
+			"POST /waitlist":                                            {Limit: 10, Window: time.Minute},
+			"POST /auth/forgot":                                         {Limit: 8, Window: time.Minute},
+			"GET /auth/reset/start":                                     {Limit: 20, Window: time.Minute},
+			"GET /auth/reset/validate":                                  {Limit: 20, Window: time.Minute},
+			"POST /auth/reset":                                          {Limit: 10, Window: time.Minute},
+			"POST /me/export":                                           {Limit: 3, Window: time.Hour},
+			"POST /me/deletion":                                         {Limit: 3, Window: time.Hour},
+			"POST /account/deletion/status":                             {Limit: 20, Window: time.Minute},
+			"POST /billing/trial/start":                                 {Limit: 10, Window: time.Minute},
+			"POST /billing/checkout-session":                            {Limit: 10, Window: time.Minute},
+			"POST /billing/credit-checkout-session":                     {Limit: 10, Window: time.Minute},
+			"POST /billing/portal-session":                              {Limit: 20, Window: time.Minute},
+			"POST /stripe/webhook":                                      {Limit: 120, Window: time.Minute},
+			"POST /ai/complete":                                         {Limit: 12, Window: time.Minute},
+			"POST /ai/sessions":                                         {Limit: 20, Window: time.Hour},
+			"POST /ai/sessions/{sessionID}/messages":                    {Limit: 12, Window: time.Minute},
+			"POST /ai/sessions/{sessionID}/tool-results":                {Limit: 30, Window: time.Minute},
+			"GET /ai/sessions/{sessionID}/events":                       {Limit: 120, Window: time.Minute},
+			"POST /ai/sessions/{sessionID}/cancel":                      {Limit: 30, Window: time.Minute},
+			"POST /ai/media-search/chunks":                              {Limit: 60, Window: time.Minute},
+			"POST /ai/media-search/search":                              {Limit: 60, Window: time.Minute},
+			"POST /spaces/{spaceID}/library/reauthenticate":             {Limit: 5, Window: time.Minute},
+			"POST /spaces/{spaceID}/notes/{id}/collaboration-ticket":    {Limit: 30, Window: time.Minute},
+			"POST /spaces/{spaceID}/drawings/{id}/collaboration-ticket": {Limit: 30, Window: time.Minute},
+			"POST /spaces/{spaceID}/notes/{id}/assets/uploads":          {Limit: 20, Window: time.Minute},
+			"POST /spaces/{spaceID}/drawings/{id}/assets/uploads":       {Limit: 20, Window: time.Minute},
+			"POST /spaces/{spaceID}/notes/{id}/assets/uploads/{id}/finalize": {
+				Limit: 30, Window: time.Minute,
+			},
+			"POST /spaces/{spaceID}/drawings/{id}/assets/uploads/{id}/finalize": {
+				Limit: 30, Window: time.Minute,
+			},
 
 			// Provider fan-out: each of these makes an upstream call on Misty's own
 			// credentials, so abuse burns third-party quota and can get the app
@@ -277,10 +290,14 @@ var costBearingRoutes = map[string]bool{
 	"/spaces/{spaceID}/integrations/notion/pages":               true,
 	"/spaces/{spaceID}/integrations/{provider}/authorize":       true,
 	// Egress and storage operations bill per byte and per request.
-	"/spaces/{spaceID}/library/exports/download":     true,
-	"/spaces/{spaceID}/library/items/{id}/download":  true,
-	"/spaces/{spaceID}/attachments/{id}/download":    true,
-	"/spaces/{spaceID}/library/shared/{id}/download": true,
+	"/spaces/{spaceID}/library/exports/download":                   true,
+	"/spaces/{spaceID}/library/items/{id}/download":                true,
+	"/spaces/{spaceID}/attachments/{id}/download":                  true,
+	"/spaces/{spaceID}/library/shared/{id}/download":               true,
+	"/spaces/{spaceID}/notes/{id}/assets/uploads":                  true,
+	"/spaces/{spaceID}/drawings/{id}/assets/uploads":               true,
+	"/spaces/{spaceID}/notes/{id}/assets/uploads/{id}/finalize":    true,
+	"/spaces/{spaceID}/drawings/{id}/assets/uploads/{id}/finalize": true,
 }
 
 func normalizeRateLimitPath(path string) string {
@@ -327,6 +344,11 @@ func normalizeRateLimitPath(path string) string {
 // or bare UUID/hex, and provider ids are similar, so length plus a separator or
 // pure hex is a reliable signal without a per-route table.
 func looksLikeRatePathIdentifier(segment string) bool {
+	// Long fixed route words containing a hyphen would otherwise look like
+	// Misty's prefixed identifiers and silently miss their explicit policy.
+	if fixedRatePathSegments[segment] {
+		return false
+	}
 	if len(segment) < 16 {
 		return false
 	}
@@ -342,6 +364,10 @@ func looksLikeRatePathIdentifier(segment string) bool {
 		}
 	}
 	return true
+}
+
+var fixedRatePathSegments = map[string]bool{
+	"collaboration-ticket": true,
 }
 
 func retryAfterSeconds(duration time.Duration) int {

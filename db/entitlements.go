@@ -7,42 +7,68 @@ import (
 )
 
 const (
-	FreeStorageBytes = int64(2_000_000_000)
-	ProStorageBytes  = int64(50_000_000_000)
+	BasicStorageBytes = int64(2_000_000_000)
+	ProStorageBytes   = int64(50_000_000_000)
+	MaxStorageBytes   = int64(250_000_000_000)
 
-	FreeWeeklyHostedAIAllowance = int64(150_000)
-	ProWeeklyHostedAIAllowance  = int64(1_000_000)
+	BasicSpaceLimit = 3
+	ProSpaceLimit   = 10
+	MaxSpaceLimit   = 0 // Unlimited.
+
+	BasicWeeklyAgentAllowance = int64(150_000)
+	ProWeeklyAgentAllowance   = BasicWeeklyAgentAllowance * 6
+	MaxWeeklyAgentAllowance   = ProWeeklyAgentAllowance * 2
+
+	// Compatibility names for internal callers while the persisted hosted-AI
+	// wallet schema retains its existing identifiers.
+	FreeStorageBytes            = BasicStorageBytes
+	FreeWeeklyHostedAIAllowance = BasicWeeklyAgentAllowance
+	ProWeeklyHostedAIAllowance  = ProWeeklyAgentAllowance
+	MaxWeeklyHostedAIAllowance  = MaxWeeklyAgentAllowance
 )
 
 type PlanEntitlements struct {
 	Plan                      Tier  `json:"plan"`
 	StorageLimitBytes         int64 `json:"storage_limit_bytes"`
 	WeeklyHostedAIAllowance   int64 `json:"-"`
+	SpaceLimit                int   `json:"space_limit"`
 	UnlimitedSpaces           bool  `json:"unlimited_spaces"`
 	UnlimitedCollaborators    bool  `json:"unlimited_collaborators"`
 	UnlimitedAgentDefinitions bool  `json:"unlimited_agent_definitions"`
 }
 
 func NormalizePlan(tier Tier) Tier {
-	if tier == TierPro || tier == TierMax {
+	switch tier {
+	case TierPersonal, TierPro:
 		return TierPro
+	case TierMax:
+		return TierMax
+	default:
+		return TierBasic
 	}
-	return TierBasic
 }
 
 func EntitlementsForTier(tier Tier) PlanEntitlements {
 	plan := NormalizePlan(tier)
 	entitlements := PlanEntitlements{
-		Plan: plan, UnlimitedSpaces: true, UnlimitedCollaborators: true,
+		Plan: plan, UnlimitedCollaborators: true,
 		UnlimitedAgentDefinitions: true,
 	}
-	if plan == TierPro {
+	switch plan {
+	case TierMax:
+		entitlements.StorageLimitBytes = MaxStorageBytes
+		entitlements.WeeklyHostedAIAllowance = MaxWeeklyAgentAllowance
+		entitlements.SpaceLimit = MaxSpaceLimit
+		entitlements.UnlimitedSpaces = true
+	case TierPro:
 		entitlements.StorageLimitBytes = ProStorageBytes
-		entitlements.WeeklyHostedAIAllowance = ProWeeklyHostedAIAllowance
-		return entitlements
+		entitlements.WeeklyHostedAIAllowance = ProWeeklyAgentAllowance
+		entitlements.SpaceLimit = ProSpaceLimit
+	default:
+		entitlements.StorageLimitBytes = BasicStorageBytes
+		entitlements.WeeklyHostedAIAllowance = BasicWeeklyAgentAllowance
+		entitlements.SpaceLimit = BasicSpaceLimit
 	}
-	entitlements.StorageLimitBytes = FreeStorageBytes
-	entitlements.WeeklyHostedAIAllowance = FreeWeeklyHostedAIAllowance
 	return entitlements
 }
 
@@ -57,6 +83,36 @@ func entitlementsForUserTx(ctx context.Context, tx *sql.Tx, userID string, now t
 		tier = TierBasic
 	}
 	return EntitlementsForTier(tier), nil
+}
+
+// addSpaceMembershipTx is the canonical gate for every operation that creates
+// a Space membership. The per-user transaction lock makes creation and invite
+// acceptance serialize against each other, so concurrent requests cannot
+// exceed the member's own plan limit.
+func addSpaceMembershipTx(ctx context.Context, tx *sql.Tx, spaceID, userID, role string) error {
+	if role != "owner" && role != "member" {
+		return ErrSpaceInvalid
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "space-memberships:"+userID); err != nil {
+		return err
+	}
+	entitlements, err := entitlementsForUserTx(ctx, tx, userID, time.Now())
+	if err != nil {
+		return err
+	}
+	if !entitlements.UnlimitedSpaces {
+		var memberships int
+		// Every existing membership counts. Invitations are intentionally not
+		// queried, and lifecycle/ownership/role are intentionally not filtered.
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM space_members WHERE user_id=$1`, userID).Scan(&memberships); err != nil {
+			return err
+		}
+		if memberships >= entitlements.SpaceLimit {
+			return ErrSpaceLimit
+		}
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO space_members(space_id,user_id,role) VALUES($1,$2,$3)`, spaceID, userID, role)
+	return err
 }
 
 func (db *Database) EntitlementsForUser(ctx context.Context, userID string) (PlanEntitlements, error) {
