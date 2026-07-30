@@ -25,7 +25,6 @@ type Server struct {
 	AIAgent                   *serveragent.Service
 	LibraryStore              api.LibraryObjectStore
 	Library                   *api.SpaceLibraryService
-	Demo                      *api.DemoService
 	Spaces                    *api.SpacesService
 	Realtime                  *api.RealtimeService
 	PasswordResetStartURL     string
@@ -81,10 +80,6 @@ func CreateServer() (*Server, error) {
 	s.Library, err = api.NewSpaceLibraryService(s.Database, s.LibraryStore, true, api.UploadLimitsFromEnv())
 	if err != nil {
 		return nil, fmt.Errorf("configure Space Library: %w", err)
-	}
-	s.Demo, err = api.NewDemoService(s.Database, s.LibraryStore, api.DemoConfigFromEnv())
-	if err != nil {
-		return nil, fmt.Errorf("configure demo management: %w", err)
 	}
 	mediaProcessingEnabled := false
 	if mediaProcessorBin, lookupErr := exec.LookPath("ffmpeg"); lookupErr == nil {

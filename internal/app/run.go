@@ -9,20 +9,10 @@ import (
 	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
 
 	"github.com/google/uuid"
-	"github.com/joho/godotenv"
 	appbilling "github.com/kannachi323/misty/server/internal/billing"
 )
 
 func Run() {
-	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found, using environment variables")
-	}
-	if err := godotenv.Load("cloudflare/journal-collab/.secrets/server.env"); err == nil {
-		log.Println("Loaded generated Journal collaboration server secrets")
-	}
-	if err := godotenv.Overload("cloudflare/journal-collab/.secrets/local-dev-server.env"); err == nil {
-		log.Println("Loaded local Journal collaboration development overrides")
-	}
 	runtimeConfig := envconfig.LoadRuntime()
 
 	server, err := CreateServer()

@@ -143,11 +143,6 @@ func (s *Server) MountHandlers() error {
 	if s.Library != nil {
 		s.mountLibraryRoutes("/api", s.Library)
 	}
-	if s.Demo != nil {
-		s.Router.Get("/api/internal/demo/status", s.Demo.Status())
-		s.Router.Post("/api/internal/demo/reset", s.Demo.Reset())
-		s.Router.Post("/api/internal/demo/agent-messages", s.Demo.AgentMessages())
-	}
 
 	// Stripe webhook — called by Stripe on payment events
 	s.Router.Post(s.StripeWebhookPath, api.StripeWebhookWithService(envconfig.Getenv("STRIPE_WEBHOOK_SECRET"), appbilling.NewStripeService(s.Database, appbilling.WithTelemetry(s.Telemetry))))
