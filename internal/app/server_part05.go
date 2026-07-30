@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-func passwordResetRedirectURLFromEnv() (string, error) {
+func TestingPasswordResetRedirectURLFromEnv() (string, error) {
 	rawURL := os.Getenv("PASSWORD_RESET_URL")
 	if rawURL == "" {
 		rawURL = "http://localhost:5173/#/reset"
@@ -24,14 +24,14 @@ func passwordResetRedirectURLFromEnv() (string, error) {
 	if parsedURL.Scheme == "https" {
 		return parsedURL.String(), nil
 	}
-	if parsedURL.Scheme == "http" && isLocalhostHostname(parsedURL.Hostname()) {
+	if parsedURL.Scheme == "http" && TestingIsLocalhostHostname(parsedURL.Hostname()) {
 		return parsedURL.String(), nil
 	}
 
 	return "", fmt.Errorf("PASSWORD_RESET_URL must use https unless it targets localhost")
 }
 
-func passwordResetStartURLFromEnv() (string, error) {
+func TestingPasswordResetStartURLFromEnv() (string, error) {
 	rawURL := os.Getenv("PASSWORD_RESET_START_URL")
 	if rawURL == "" {
 		rawURL = "http://localhost:8080/auth/reset/start"
@@ -47,14 +47,14 @@ func passwordResetStartURLFromEnv() (string, error) {
 	if parsedURL.Scheme == "https" {
 		return parsedURL.String(), nil
 	}
-	if parsedURL.Scheme == "http" && isLocalhostHostname(parsedURL.Hostname()) {
+	if parsedURL.Scheme == "http" && TestingIsLocalhostHostname(parsedURL.Hostname()) {
 		return parsedURL.String(), nil
 	}
 
 	return "", fmt.Errorf("PASSWORD_RESET_START_URL must use https unless it targets localhost")
 }
 
-func isLocalhostHostname(host string) bool {
+func TestingIsLocalhostHostname(host string) bool {
 	switch strings.ToLower(strings.TrimSpace(host)) {
 	case "localhost", "127.0.0.1", "::1":
 		return true
@@ -63,12 +63,12 @@ func isLocalhostHostname(host string) bool {
 	}
 }
 
-const defaultStripeWebhookPath = "/stripe/webhook"
+const TestingDefaultStripeWebhookPath = "/stripe/webhook"
 
-func stripeWebhookPathFromEnv() (string, error) {
+func TestingStripeWebhookPathFromEnv() (string, error) {
 	rawPath := strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_PATH"))
 	if rawPath == "" {
-		return defaultStripeWebhookPath, nil
+		return TestingDefaultStripeWebhookPath, nil
 	}
 
 	parsedPath, err := url.ParseRequestURI(rawPath)
@@ -81,7 +81,7 @@ func stripeWebhookPathFromEnv() (string, error) {
 		parsedPath.Fragment != "" ||
 		rawPath == "/" ||
 		strings.ContainsAny(rawPath, "{}*") {
-		return "", fmt.Errorf("STRIPE_WEBHOOK_PATH must be a static absolute path such as %s", defaultStripeWebhookPath)
+		return "", fmt.Errorf("STRIPE_WEBHOOK_PATH must be a static absolute path such as %s", TestingDefaultStripeWebhookPath)
 	}
 
 	return rawPath, nil

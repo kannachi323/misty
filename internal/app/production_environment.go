@@ -12,7 +12,7 @@ import (
 // process start successfully while core production features are unusable or
 // insecure. Feature-specific constructors perform the deeper key and secret
 // validation after this baseline check.
-func validateProductionEnvironment() error {
+func TestingValidateProductionEnvironment() error {
 	if !strings.EqualFold(strings.TrimSpace(os.Getenv("MISTY_ENVIRONMENT")), "production") {
 		return nil
 	}

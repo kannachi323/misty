@@ -29,7 +29,7 @@ func (s *SmartLibraryService) hostedAIWeeklyRatio(userID string, estimatedCharge
 	return float64(estimatedCharge) / float64(allowance)
 }
 
-func validOpaqueID(value, prefix string) bool {
+func TestingValidOpaqueID(value, prefix string) bool {
 	return strings.HasPrefix(value, prefix) && len(value) <= 96 && !strings.ContainsAny(value, "/\\ \t\r\n")
 }
 

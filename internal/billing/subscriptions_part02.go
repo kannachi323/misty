@@ -12,10 +12,10 @@ import (
 )
 
 func (service *Service) CreateCheckoutSession(userID string, tier db.Tier, interval BillingInterval) (string, error) {
-	if !validPaidTier(tier) {
+	if !TestingValidPaidTier(tier) {
 		return "", ErrInvalidTier
 	}
-	if !validInterval(interval) {
+	if !TestingValidInterval(interval) {
 		return "", ErrInvalidInterval
 	}
 	user, err := service.database.GetUserByID(userID)
@@ -44,7 +44,7 @@ func (service *Service) CreateCheckoutSession(userID string, tier db.Tier, inter
 			return "", ErrSubscriptionExists
 		}
 	}
-	cfg, err := loadStripeCheckoutConfig()
+	cfg, err := TestingLoadStripeCheckoutConfig()
 	if err != nil {
 		return "", err
 	}
@@ -152,7 +152,7 @@ func (service *Service) CreateCreditCheckoutSession(userID, packID string) (stri
 }
 
 func (service *Service) CreatePortalSession(userID string) (string, error) {
-	cfg, err := loadStripeCheckoutConfig()
+	cfg, err := TestingLoadStripeCheckoutConfig()
 	if err != nil {
 		return "", err
 	}
@@ -210,7 +210,7 @@ func createStripeCheckoutSession(
 	expiresAt time.Time,
 ) (CheckoutSessionResult, error) {
 	stripe.Key = cfg.secretKey
-	params := stripeCheckoutSessionParams(cfg, user, tier, interval, customerID, trialEligible)
+	params := TestingStripeCheckoutSessionParams(cfg, user, tier, interval, customerID, trialEligible)
 	params.ExpiresAt = stripe.Int64(expiresAt.UTC().Unix())
 	params.SetIdempotencyKey("misty-subscription-checkout-" + idempotencyKey)
 	session, err := checkoutsession.New(params)
@@ -233,12 +233,12 @@ func fetchStripeCheckoutSession(
 	return checkoutsession.Get(sessionID, nil)
 }
 
-func stripeCheckoutSessionParams(cfg CheckoutConfig, user *db.User, tier db.Tier, interval BillingInterval, customerID string, trialEligible bool) *stripe.CheckoutSessionParams {
+func TestingStripeCheckoutSessionParams(cfg CheckoutConfig, user *db.User, tier db.Tier, interval BillingInterval, customerID string, trialEligible bool) *stripe.CheckoutSessionParams {
 	metadata := map[string]string{"user_id": user.ID, "license_id": user.LicenseID, "tier": string(tier), "interval": string(interval), "kind": "subscription"}
 	params := &stripe.CheckoutSessionParams{Mode: stripe.String(string(stripe.CheckoutSessionModeSubscription)),
 		SuccessURL: stripe.String(cfg.successURL), CancelURL: stripe.String(cfg.cancelURL), ClientReferenceID: stripe.String(user.ID),
 		Metadata: metadata, SubscriptionData: &stripe.CheckoutSessionSubscriptionDataParams{Metadata: metadata},
-		LineItems: []*stripe.CheckoutSessionLineItemParams{{Price: stripe.String(cfg.prices[priceKey{tier: tier, interval: interval}]), Quantity: stripe.Int64(1)}}}
+		LineItems: []*stripe.CheckoutSessionLineItemParams{{Price: stripe.String(cfg.TestingPrices[TestingPriceKey{TestingTier: tier, TestingInterval: interval}]), Quantity: stripe.Int64(1)}}}
 	if tier == db.TierPro && trialEligible {
 		params.SubscriptionData.TrialPeriodDays = stripe.Int64(int64(ProTrialDuration / (24 * time.Hour)))
 		params.PaymentMethodCollection = stripe.String(string(stripe.CheckoutSessionPaymentMethodCollectionAlways))

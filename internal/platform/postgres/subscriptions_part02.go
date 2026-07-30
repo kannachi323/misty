@@ -15,7 +15,7 @@ func (db *Database) ListStripeSubscriptionsDueForReconciliation(
 		limit = 100
 	}
 	var subscriptions []StripeSubscription
-	err := db.withRLSContext(ctx, serviceRLSSettings(), func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(ctx, TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `
 			SELECT id,user_id,license_id,stripe_subscription_id,stripe_customer_id,
 			       stripe_price_id,tier,billing_interval,status,current_period_end,
@@ -81,7 +81,7 @@ func (db *Database) MarkStripeSubscriptionReconciled(
 	subscriptionID string,
 	now, reconcileAfter time.Time,
 ) error {
-	return db.withRLSContext(ctx, serviceRLSSettings(), func(tx *sql.Tx) error {
+	return db.TestingWithRLSContext(ctx, TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			UPDATE stripe_subscriptions
 			SET last_reconciled_at=$2,reconcile_after=$3,reconcile_failures=0,
@@ -100,7 +100,7 @@ func (db *Database) MarkStripeSubscriptionReconcileFailed(
 	if len(failure) > 500 {
 		failure = failure[:500]
 	}
-	return db.withRLSContext(ctx, serviceRLSSettings(), func(tx *sql.Tx) error {
+	return db.TestingWithRLSContext(ctx, TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			UPDATE stripe_subscriptions
 			SET reconcile_after=$2,reconcile_failures=reconcile_failures+1,
@@ -124,7 +124,7 @@ func (db *Database) ExpireStaleSubscriptionEntitlements(
 		limit = 100
 	}
 	affected := int64(0)
-	err := db.withRLSContext(ctx, serviceRLSSettings(), func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(ctx, TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx, `
 			WITH stale AS (
 				SELECT s.license_id
@@ -153,7 +153,7 @@ func (db *Database) ExpireStaleSubscriptionEntitlements(
 
 func (db *Database) StripeEventProcessed(eventID string) (bool, error) {
 	var exists bool
-	err := db.withRLSContext(context.Background(), serviceRLSSettings(), func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(context.Background(), TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		return tx.QueryRowContext(context.Background(),
 			`SELECT EXISTS(SELECT 1 FROM stripe_webhook_events WHERE event_id = $1)`, eventID).Scan(&exists)
 	})
@@ -161,7 +161,7 @@ func (db *Database) StripeEventProcessed(eventID string) (bool, error) {
 }
 
 func (db *Database) MarkStripeEventProcessed(eventID, eventType string) error {
-	return db.withRLSContext(context.Background(), serviceRLSSettings(), func(tx *sql.Tx) error {
+	return db.TestingWithRLSContext(context.Background(), TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(context.Background(), `
 			INSERT INTO stripe_webhook_events (event_id, event_type) VALUES ($1, $2)
 			ON CONFLICT (event_id) DO NOTHING

@@ -12,7 +12,7 @@ import (
 	db "github.com/kannachi323/misty/server/internal/platform/postgres"
 )
 
-func decodeAIJSONWithLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) error {
+func TestingDecodeAIJSONWithLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) error {
 	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
@@ -25,7 +25,7 @@ func decodeAIJSONWithLimit(w http.ResponseWriter, r *http.Request, dst any, limi
 	return nil
 }
 
-func writeAIError(w http.ResponseWriter, err error) {
+func TestingWriteAIError(w http.ResponseWriter, err error) {
 	var exhausted agent.HostedAILimitReachedError
 	switch {
 	case errors.Is(err, context.Canceled):

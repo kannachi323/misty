@@ -15,7 +15,7 @@ import (
 	"github.com/kannachi323/misty/server/internal/platform/security"
 )
 
-const sessionCookieName = "misty_session"
+const TestingSessionCookieName = "misty_session"
 
 func sessionUserID(r *http.Request, database *db.Database) (string, error) {
 	token, ok := sessionTokenFromRequest(r)
@@ -27,10 +27,10 @@ func sessionUserID(r *http.Request, database *db.Database) (string, error) {
 }
 
 func sessionTokenFromRequest(r *http.Request) (string, bool) {
-	if token, ok := bearerTokenFromRequest(r); ok {
+	if token, ok := TestingBearerTokenFromRequest(r); ok {
 		return token, true
 	}
-	cookie, err := r.Cookie(sessionCookieName)
+	cookie, err := r.Cookie(TestingSessionCookieName)
 	if err != nil {
 		return "", false
 	}
@@ -38,7 +38,7 @@ func sessionTokenFromRequest(r *http.Request) (string, bool) {
 	return token, token != ""
 }
 
-func bearerTokenFromRequest(r *http.Request) (string, bool) {
+func TestingBearerTokenFromRequest(r *http.Request) (string, bool) {
 	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
 	scheme, token, ok := strings.Cut(authHeader, " ")
 	if !ok || !strings.EqualFold(scheme, "Bearer") {
@@ -108,7 +108,7 @@ func GetMe(database *db.Database) http.HandlerFunc {
 			"created_at":       user.CreatedAt,
 			"tier":             string(db.NormalizePlan(license.Tier)),
 			"status":           license.Status,
-			"allows_use":       licenseAllowsUse(license),
+			"allows_use":       TestingLicenseAllowsUse(license),
 			"expires_at":       license.ExpiresAt,
 			"trial_started_at": license.TrialStartedAt,
 			"license_device":   license.LicenseDevice,
@@ -147,7 +147,7 @@ func UserAvatar(database *db.Database, store LibraryObjectStore) http.HandlerFun
 			}
 			serveAvatarObject(w, r, store, userID, version)
 		case http.MethodPut:
-			data, ok := readAvatarPNG(w, r)
+			data, ok := TestingReadAvatarPNG(w, r)
 			if !ok {
 				return
 			}
@@ -206,7 +206,7 @@ func serveAvatarObject(
 	_, _ = io.Copy(w, reader)
 }
 
-func readAvatarPNG(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+func TestingReadAvatarPNG(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxAvatarPNGBytes+1)
 	data, err := io.ReadAll(r.Body)
 	if err != nil || len(data) == 0 || len(data) > maxAvatarPNGBytes {

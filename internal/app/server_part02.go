@@ -17,7 +17,7 @@ import (
 
 func (s *Server) MountHandlers() error {
 	s.Router.Use(cors.Handler(cors.Options{
-		AllowOriginFunc:  func(_ *http.Request, origin string) bool { return isAllowedCORSOrigin(origin) },
+		AllowOriginFunc:  func(_ *http.Request, origin string) bool { return TestingIsAllowedCORSOrigin(origin) },
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   allowedCORSRequestHeaders,
 		AllowCredentials: true,
@@ -26,7 +26,7 @@ func (s *Server) MountHandlers() error {
 		ExposedHeaders: []string{"X-Misty-Signed-Download", "X-Request-ID"},
 		MaxAge:         300,
 	}))
-	s.Router.Use(requestObservabilityMiddleware)
+	s.Router.Use(TestingRequestObservabilityMiddleware)
 	// The abuse guard runs first: a blocked caller is rejected before any
 	// routing or handler work, and repeated per-route rejections escalate
 	// into a block through the shared guard.

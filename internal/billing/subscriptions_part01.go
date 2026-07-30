@@ -29,19 +29,19 @@ var (
 	ErrPortalUnavailable  = errors.New("customer portal unavailable")
 )
 
-type priceKey struct {
-	tier     db.Tier
-	interval BillingInterval
+type TestingPriceKey struct {
+	TestingTier     db.Tier
+	TestingInterval BillingInterval
 }
 
 var subscriptionPriceDefinitions = []struct {
 	env string
-	key priceKey
+	key TestingPriceKey
 }{
-	{"STRIPE_PRICE_PRO_MONTHLY", priceKey{db.TierPro, BillingIntervalMonth}},
-	{"STRIPE_PRICE_PRO_YEARLY", priceKey{db.TierPro, BillingIntervalYear}},
-	{"STRIPE_PRICE_MAX_MONTHLY", priceKey{db.TierMax, BillingIntervalMonth}},
-	{"STRIPE_PRICE_MAX_YEARLY", priceKey{db.TierMax, BillingIntervalYear}},
+	{"STRIPE_PRICE_PRO_MONTHLY", TestingPriceKey{db.TierPro, BillingIntervalMonth}},
+	{"STRIPE_PRICE_PRO_YEARLY", TestingPriceKey{db.TierPro, BillingIntervalYear}},
+	{"STRIPE_PRICE_MAX_MONTHLY", TestingPriceKey{db.TierMax, BillingIntervalMonth}},
+	{"STRIPE_PRICE_MAX_YEARLY", TestingPriceKey{db.TierMax, BillingIntervalYear}},
 }
 
 type CheckoutConfig struct {
@@ -49,7 +49,7 @@ type CheckoutConfig struct {
 	successURL      string
 	cancelURL       string
 	portalReturnURL string
-	prices          map[priceKey]string
+	TestingPrices   map[TestingPriceKey]string
 }
 
 type CheckoutSessionResult struct {
@@ -127,10 +127,10 @@ func WithTrialDuration(duration time.Duration) ServiceOption {
 	}
 }
 
-func validPaidTier(tier db.Tier) bool {
+func TestingValidPaidTier(tier db.Tier) bool {
 	return tier == db.TierPro || tier == db.TierMax
 }
 
-func validInterval(interval BillingInterval) bool {
+func TestingValidInterval(interval BillingInterval) bool {
 	return interval == BillingIntervalMonth || interval == BillingIntervalYear
 }

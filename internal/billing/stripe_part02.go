@@ -133,10 +133,10 @@ func (service *StripeService) handleSubscriptionChanged(
 ) error {
 	userID := strings.TrimSpace(event.Metadata["user_id"])
 	licenseID := strings.TrimSpace(event.Metadata["license_id"])
-	tier, ok := tierFromMetadata(event.Metadata["tier"])
+	tier, ok := TestingTierFromMetadata(event.Metadata["tier"])
 	metadataInterval := BillingInterval(strings.ToLower(strings.TrimSpace(event.Metadata["interval"])))
-	if userID == "" || licenseID == "" || !ok || !validPaidTier(tier) ||
-		!validInterval(metadataInterval) || strings.TrimSpace(event.Metadata["kind"]) != "subscription" {
+	if userID == "" || licenseID == "" || !ok || !TestingValidPaidTier(tier) ||
+		!TestingValidInterval(metadataInterval) || strings.TrimSpace(event.Metadata["kind"]) != "subscription" {
 		return errors.New("subscription metadata is invalid")
 	}
 	user, err := service.database.GetUserByID(userID)
@@ -150,7 +150,7 @@ func (service *StripeService) handleSubscriptionChanged(
 		return errors.New("subscription must contain exactly one configured price")
 	}
 	priceID := strings.TrimSpace(event.Items.Data[0].Price.ID)
-	catalogTier, catalogInterval, catalogOK := configuredSubscriptionPrice(priceID)
+	catalogTier, catalogInterval, catalogOK := TestingConfiguredSubscriptionPrice(priceID)
 	if !catalogOK {
 		return errors.New("subscription price is not in the configured catalog")
 	}

@@ -46,7 +46,7 @@ func GatewayModels(ctx context.Context) ([]GatewayModel, error) {
 	}
 	gatewayCatalogCache.Unlock()
 
-	models, err := fetchGatewayModels(ctx)
+	models, err := TestingFetchGatewayModels(ctx)
 	if err != nil || len(models) == 0 {
 		models = configuredGatewayModels()
 	}
@@ -149,18 +149,18 @@ func NewGatewayProviderForModelWithReasoning(modelID, reasoningEffort string) (M
 	if apiKey == "" {
 		return nil, errors.New("AI gateway is not configured")
 	}
-	return NewOpenAIProvider(OpenAIProviderConfig{APIKey: apiKey, BaseURL: envOrDefault("AI_GATEWAY_BASE_URL", defaultVercelAIBaseURL), Model: modelID, ProviderName: ProviderVercelAI, ReasoningEffort: strings.TrimSpace(reasoningEffort)}), nil
+	return NewOpenAIProvider(OpenAIProviderConfig{APIKey: apiKey, BaseURL: envOrDefault("AI_GATEWAY_BASE_URL", TestingDefaultVercelAIBaseURL), Model: modelID, ProviderName: ProviderVercelAI, ReasoningEffort: strings.TrimSpace(reasoningEffort)}), nil
 }
 
 func configuredGatewayModels() []GatewayModel {
 	var configured []GatewayModel
 	if json.Unmarshal([]byte(strings.TrimSpace(os.Getenv("MISTY_AI_MODEL_CATALOG_JSON"))), &configured) == nil {
-		return filterChatModels(configured)
+		return TestingFilterChatModels(configured)
 	}
 	ids := []string{
-		envOrDefault("MISTY_AI_LOW_MODEL", defaultAgentLowGatewayModel),
-		envOrDefault("MISTY_AI_MED_MODEL", defaultAgentMedGatewayModel),
-		envOrDefault("MISTY_AI_HIGH_MODEL", defaultAgentHighGatewayModel),
+		envOrDefault("MISTY_AI_LOW_MODEL", TestingDefaultAgentLowGatewayModel),
+		envOrDefault("MISTY_AI_MED_MODEL", TestingDefaultAgentMedGatewayModel),
+		envOrDefault("MISTY_AI_HIGH_MODEL", TestingDefaultAgentHighGatewayModel),
 	}
 	seen := map[string]bool{}
 	out := []GatewayModel{}
@@ -175,9 +175,9 @@ func configuredGatewayModels() []GatewayModel {
 	return out
 }
 
-func fetchGatewayModels(ctx context.Context) ([]GatewayModel, error) {
+func TestingFetchGatewayModels(ctx context.Context) ([]GatewayModel, error) {
 	apiKey := firstEnv("AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN")
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(envOrDefault("AI_GATEWAY_BASE_URL", defaultVercelAIBaseURL), "/")+"/models", nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(envOrDefault("AI_GATEWAY_BASE_URL", TestingDefaultVercelAIBaseURL), "/")+"/models", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -219,10 +219,10 @@ func fetchGatewayModels(ctx context.Context) ([]GatewayModel, error) {
 		if itemType != "" && !strings.Contains(itemType, "language") && !strings.Contains(itemType, "chat") && !strings.Contains(itemType, "text") {
 			continue
 		}
-		input, inputOK := gatewayTokenRate(item.Pricing["input"])
-		output, outputOK := gatewayTokenRate(item.Pricing["output"])
-		cached, _ := gatewayTokenRate(firstPricingValue(item.Pricing, "cached_input", "input_cache_read", "cache_read"))
-		capabilities := gatewayCapabilities(item.Capabilities)
+		input, inputOK := TestingGatewayTokenRate(item.Pricing["input"])
+		output, outputOK := TestingGatewayTokenRate(item.Pricing["output"])
+		cached, _ := TestingGatewayTokenRate(firstPricingValue(item.Pricing, "cached_input", "input_cache_read", "cache_read"))
+		capabilities := TestingGatewayCapabilities(item.Capabilities)
 		if len(item.Tags) > 0 {
 			capabilities = append(capabilities, item.Tags...)
 		}
@@ -236,5 +236,5 @@ func fetchGatewayModels(ctx context.Context) ([]GatewayModel, error) {
 			OutputRateMilliUSDPerMillion: output, HasTokenPricing: inputOK && outputOK,
 		})
 	}
-	return filterChatModels(models), nil
+	return TestingFilterChatModels(models), nil
 }

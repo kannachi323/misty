@@ -63,7 +63,7 @@ func (s *SmartLibraryService) CompleteReindex() http.HandlerFunc {
 				item.Metadata["contentTruncated"] = "true"
 			}
 			input := serveragent.SmartLibraryAsset{AssetID: item.AssetID, AssetKind: item.AssetKind, MimeType: item.MimeType, Bytes: raw, ExtractedText: item.ExtractedText, Metadata: item.Metadata}
-			if err != nil || !validOpaqueID(item.AssetID, "asset_") || len(item.Fingerprint) != 64 || len(raw) > 1<<20 || serveragent.ValidateSmartLibraryAsset(input) != nil {
+			if err != nil || !TestingValidOpaqueID(item.AssetID, "asset_") || len(item.Fingerprint) != 64 || len(raw) > 1<<20 || serveragent.ValidateSmartLibraryAsset(input) != nil {
 				http.Error(w, "invalid request", 400)
 				return
 			}

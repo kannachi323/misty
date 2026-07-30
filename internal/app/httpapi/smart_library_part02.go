@@ -55,7 +55,7 @@ func (s *SmartLibraryService) Approve(kind string) http.HandlerFunc {
 				}
 				asset.Metadata["contentTruncated"] = "true"
 			}
-			if err != nil || !validOpaqueID(preview.AssetID, "asset_") || len(preview.Fingerprint) != 64 || len(raw) > 1<<20 || serveragent.ValidateSmartLibraryAsset(asset) != nil {
+			if err != nil || !TestingValidOpaqueID(preview.AssetID, "asset_") || len(preview.Fingerprint) != 64 || len(raw) > 1<<20 || serveragent.ValidateSmartLibraryAsset(asset) != nil {
 				http.Error(w, "invalid request", 400)
 				return
 			}

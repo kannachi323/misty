@@ -127,7 +127,7 @@ func (db *Database) GetOrCreateHostedAIWallet(userID string, tier Tier, now time
 	allowance := WeeklyHostedAIAllowance(tier)
 	now = now.UTC()
 	var wallet HostedAIWallet
-	err := db.withRLSContext(context.Background(), serviceRLSSettings(), func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(context.Background(), TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(context.Background(), `
 			WITH released AS (
 				UPDATE hosted_ai_reservations SET status='released',settled_at=NOW()

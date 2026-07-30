@@ -62,7 +62,7 @@ func (db *Database) upsertStripeSubscription(
 		subscription.ReconcileAfter = time.Now().UTC()
 	}
 	applied := false
-	err := db.withRLSContext(context.Background(), serviceRLSSettings(), func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(context.Background(), TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		query := `
 			INSERT INTO stripe_subscriptions (
 				id, user_id, license_id, stripe_subscription_id, stripe_customer_id,
@@ -129,7 +129,7 @@ func (db *Database) GetStripeSubscriptionByUserID(userID string) (*StripeSubscri
 }
 
 func (db *Database) GetStripeSubscriptionByStripeID(subscriptionID string) (*StripeSubscription, error) {
-	return db.getStripeSubscription("stripe_subscription_id", subscriptionID, serviceRLSSettings())
+	return db.getStripeSubscription("stripe_subscription_id", subscriptionID, TestingServiceRLSSettings())
 }
 
 func (db *Database) getStripeSubscription(column, value string, settings map[string]string) (*StripeSubscription, error) {
@@ -138,7 +138,7 @@ func (db *Database) getStripeSubscription(column, value string, settings map[str
 	}
 	var subscription StripeSubscription
 	var periodEnd, canceledAt, sourceEventCreatedAt, lastReconciledAt sql.NullTime
-	err := db.withRLSContext(context.Background(), settings, func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(context.Background(), settings, func(tx *sql.Tx) error {
 		return tx.QueryRowContext(context.Background(), `
 			SELECT id, user_id, license_id, stripe_subscription_id, stripe_customer_id,
 			       stripe_price_id, tier, billing_interval, status, current_period_end,
@@ -184,7 +184,7 @@ func (db *Database) GetStripeCustomerIDForUser(userID string) (string, error) {
 		return subscription.StripeCustomerID, nil
 	}
 	var customerID sql.NullString
-	err = db.withRLSContext(context.Background(), userRLSSettings(userID), func(tx *sql.Tx) error {
+	err = db.TestingWithRLSContext(context.Background(), userRLSSettings(userID), func(tx *sql.Tx) error {
 		return tx.QueryRowContext(context.Background(), `
 			SELECT stripe_customer_id FROM stripe_purchases
 			WHERE user_id = $1 AND stripe_customer_id IS NOT NULL

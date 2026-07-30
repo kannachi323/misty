@@ -38,7 +38,7 @@ func (db *Database) BeginSubscriptionCheckout(
 	now = now.UTC()
 	var attempt SubscriptionCheckoutAttempt
 	created := false
-	err := db.withRLSContext(ctx, serviceRLSSettings(), func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(ctx, TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		attempt = SubscriptionCheckoutAttempt{
 			ID: uuid.NewString(), UserID: userID, LicenseID: licenseID,
 			Tier: tier, BillingInterval: interval, Status: "creating",
@@ -73,7 +73,7 @@ func (db *Database) OpenSubscriptionCheckout(
 	attemptID, sessionID, checkoutURL string,
 	expiresAt time.Time,
 ) error {
-	return db.withRLSContext(ctx, serviceRLSSettings(), func(tx *sql.Tx) error {
+	return db.TestingWithRLSContext(ctx, TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx, `
 			UPDATE stripe_subscription_checkout_attempts
 			SET status='open',stripe_checkout_session_id=$2,checkout_url=$3,
@@ -95,7 +95,7 @@ func (db *Database) OpenSubscriptionCheckout(
 }
 
 func (db *Database) FailSubscriptionCheckout(ctx context.Context, attemptID string) error {
-	return db.withRLSContext(ctx, serviceRLSSettings(), func(tx *sql.Tx) error {
+	return db.TestingWithRLSContext(ctx, TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			UPDATE stripe_subscription_checkout_attempts
 			SET status='failed',updated_at=NOW()
@@ -112,7 +112,7 @@ func (db *Database) CompleteSubscriptionCheckoutBySessionID(
 	if sessionID == "" {
 		return nil
 	}
-	return db.withRLSContext(ctx, serviceRLSSettings(), func(tx *sql.Tx) error {
+	return db.TestingWithRLSContext(ctx, TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			UPDATE stripe_subscription_checkout_attempts
 			SET status='completed',updated_at=NOW()
@@ -129,7 +129,7 @@ func (db *Database) ExpireSubscriptionCheckoutBySessionID(
 	if sessionID == "" {
 		return nil
 	}
-	return db.withRLSContext(ctx, serviceRLSSettings(), func(tx *sql.Tx) error {
+	return db.TestingWithRLSContext(ctx, TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			UPDATE stripe_subscription_checkout_attempts
 			SET status='expired',updated_at=NOW()
@@ -144,7 +144,7 @@ func (db *Database) HasCompletedSubscriptionCheckoutWithoutSubscription(
 	userID string,
 ) (bool, error) {
 	var exists bool
-	err := db.withRLSContext(ctx, userRLSSettings(userID), func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(ctx, userRLSSettings(userID), func(tx *sql.Tx) error {
 		return tx.QueryRowContext(ctx, `
 			SELECT EXISTS(
 				SELECT 1

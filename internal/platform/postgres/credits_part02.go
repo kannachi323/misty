@@ -21,7 +21,7 @@ func (db *Database) ReserveHostedAIUsage(userID string, tier Tier, meter, idempo
 	reservation := &HostedAIReservation{ID: uuid.NewString(), UserID: userID, ReservedMicrousd: amount, ReservedCredits: amount, Status: "reserved"}
 	var wallet HostedAIWallet
 	reservedNow := false
-	err := db.withRLSContext(context.Background(), serviceRLSSettings(), func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(context.Background(), TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		if err := tx.QueryRowContext(context.Background(), `SELECT user_id,weekly_allowance_microusd,weekly_remaining_microusd,reserved_microusd,reset_at FROM hosted_ai_wallets WHERE user_id=$1 FOR UPDATE`, userID).
 			Scan(&wallet.UserID, &wallet.WeeklyAllowanceMicrousd, &wallet.WeeklyRemainingMicrousd, &wallet.ReservedMicrousd, &wallet.ResetAt); err != nil {
 			return err
@@ -76,7 +76,7 @@ func (db *Database) ReserveCredits(userID string, tier Tier, meter, idempotencyK
 }
 
 func (db *Database) ReleaseHostedAIReservation(reservationID string) error {
-	return db.withRLSContext(context.Background(), serviceRLSSettings(), func(tx *sql.Tx) error {
+	return db.TestingWithRLSContext(context.Background(), TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		var userID string
 		var reserved int64
 		err := tx.QueryRowContext(context.Background(), `UPDATE hosted_ai_reservations SET status='released',settled_at=NOW() WHERE id=$1 AND status='reserved' RETURNING user_id,reserved_microusd`, reservationID).Scan(&userID, &reserved)
@@ -104,7 +104,7 @@ func (db *Database) SettleHostedAIReservation(reservationID, idempotencyKey stri
 		charge = 1
 	}
 	var wallet HostedAIWallet
-	err := db.withRLSContext(context.Background(), serviceRLSSettings(), func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(context.Background(), TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		var userID, meter, status string
 		var reserved int64
 		if err := tx.QueryRowContext(context.Background(), `SELECT user_id,meter,reserved_microusd,status FROM hosted_ai_reservations WHERE id=$1 FOR UPDATE`, reservationID).Scan(&userID, &meter, &reserved, &status); err != nil {
@@ -151,7 +151,7 @@ func (db *Database) SettleCreditReservation(reservationID, idempotencyKey string
 
 func (db *Database) HostedAIUsageByMeter(userID string, since time.Time) ([]HostedAIUsageSummary, error) {
 	var summaries []HostedAIUsageSummary
-	err := db.withRLSContext(context.Background(), userRLSSettings(userID), func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(context.Background(), userRLSSettings(userID), func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(context.Background(), `SELECT meter,COALESCE(SUM(charged_microusd),0) FROM hosted_ai_usage_ledger WHERE user_id=$1 AND source='consumption' AND created_at>=$2 GROUP BY meter ORDER BY meter`, userID, since)
 		if err != nil {
 			return err

@@ -62,7 +62,7 @@ func (db *Database) GetLicenseByUserID(userID string) (*License, error) {
 	var trialStartedAt sql.NullTime
 	var legacyTier sql.NullString
 
-	err := db.withRLSContext(context.Background(), userRLSSettings(userID), func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(context.Background(), userRLSSettings(userID), func(tx *sql.Tx) error {
 		return tx.QueryRowContext(
 			context.Background(),
 			`SELECT id, user_id, tier, status, expires_at, trial_started_at, license_device, legacy_tier FROM licenses WHERE user_id = $1`,
@@ -109,7 +109,7 @@ func (db *Database) StartTrialByUserID(userID string, duration time.Duration) (b
 	expiresAt := now.Add(duration)
 
 	var rowsAffected int64
-	err := db.withRLSContext(context.Background(), userRLSSettings(userID), func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(context.Background(), userRLSSettings(userID), func(tx *sql.Tx) error {
 		result, err := tx.ExecContext(context.Background(), `
 			UPDATE licenses
 			SET tier = $2,
@@ -137,7 +137,7 @@ func (db *Database) StartTrialByUserID(userID string, duration time.Duration) (b
 }
 
 func (db *Database) SetLicenseStateByID(licenseID string, tier Tier, status string, expiresAt *time.Time) error {
-	err := db.withRLSContext(context.Background(), serviceRLSSettings(), func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(context.Background(), TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(context.Background(), `
 			UPDATE licenses
 			SET tier = $2,
@@ -156,7 +156,7 @@ func (db *Database) SetLicenseStateByID(licenseID string, tier Tier, status stri
 
 func (db *Database) SetStripeTrialState(licenseID string, tier Tier, expiresAt *time.Time) error {
 	now := time.Now().UTC()
-	return db.withRLSContext(context.Background(), serviceRLSSettings(), func(tx *sql.Tx) error {
+	return db.TestingWithRLSContext(context.Background(), TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(context.Background(), `UPDATE licenses SET tier=$2,status=$3,expires_at=$4,
 			trial_started_at=COALESCE(trial_started_at,$5),updated_at=NOW() WHERE id=$1`,
 			licenseID, NormalizePlan(tier), LicenseStatusTrialing, expiresAt, now)
@@ -165,7 +165,7 @@ func (db *Database) SetStripeTrialState(licenseID string, tier Tier, expiresAt *
 }
 
 func (db *Database) SetLicenseStateByUserID(userID string, tier Tier, status string, expiresAt *time.Time) error {
-	err := db.withRLSContext(context.Background(), serviceRLSSettings(), func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(context.Background(), TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(context.Background(), `
 			UPDATE licenses
 			SET tier = $2,
@@ -183,14 +183,14 @@ func (db *Database) SetLicenseStateByUserID(userID string, tier Tier, status str
 }
 
 func (db *Database) SetLegacyTierByID(licenseID string, tier *Tier) error {
-	return db.withRLSContext(context.Background(), serviceRLSSettings(), func(tx *sql.Tx) error {
+	return db.TestingWithRLSContext(context.Background(), TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(context.Background(), `UPDATE licenses SET legacy_tier = $2, updated_at = NOW() WHERE id = $1`, licenseID, tier)
 		return err
 	})
 }
 
 func (db *Database) UpdateLicenseDevice(userID, device string) error {
-	err := db.withRLSContext(context.Background(), userRLSSettings(userID), func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(context.Background(), userRLSSettings(userID), func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(context.Background(), `
 			UPDATE licenses
 			SET license_device = $2,

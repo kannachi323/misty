@@ -34,7 +34,7 @@ func (db *Database) UpsertStripePurchase(purchase *StripePurchase) error {
 		purchase.ID = uuid.New().String()
 	}
 
-	err := db.withRLSContext(context.Background(), serviceRLSSettings(), func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(context.Background(), TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(context.Background(), `
 			INSERT INTO stripe_purchases (
 				id, user_id, license_id, tier_purchased, stripe_checkout_session_id,
@@ -84,7 +84,7 @@ func (db *Database) GetStripePurchaseByChargeID(chargeID string) (*StripePurchas
 }
 
 func (db *Database) UpdateStripePurchaseStatus(id, status, eventSource string) error {
-	err := db.withRLSContext(context.Background(), serviceRLSSettings(), func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(context.Background(), TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(context.Background(), `
 			UPDATE stripe_purchases
 			SET status = $2,
@@ -103,7 +103,7 @@ func (db *Database) UpdateStripePurchaseStatus(id, status, eventSource string) e
 func (db *Database) HasCompletedStripePurchase(userID string) (bool, error) {
 	var exists bool
 
-	err := db.withRLSContext(context.Background(), userRLSSettings(userID), func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(context.Background(), userRLSSettings(userID), func(tx *sql.Tx) error {
 		return tx.QueryRowContext(
 			context.Background(),
 			`SELECT EXISTS(SELECT 1 FROM stripe_purchases WHERE user_id = $1 AND status = $2)`,
@@ -121,7 +121,7 @@ func (db *Database) HasCompletedStripePurchase(userID string) (bool, error) {
 func (db *Database) HasCompletedStripePurchaseForTier(userID string, tier Tier) (bool, error) {
 	var exists bool
 
-	err := db.withRLSContext(context.Background(), userRLSSettings(userID), func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(context.Background(), userRLSSettings(userID), func(tx *sql.Tx) error {
 		return tx.QueryRowContext(
 			context.Background(),
 			`SELECT EXISTS(SELECT 1 FROM stripe_purchases WHERE user_id = $1 AND tier_purchased = $2 AND status = $3)`,
@@ -148,7 +148,7 @@ func (db *Database) getStripePurchaseByColumn(column, value string) (*StripePurc
 	var paymentIntentID sql.NullString
 	var customerID sql.NullString
 	var chargeID sql.NullString
-	err := db.withRLSContext(context.Background(), serviceRLSSettings(), func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(context.Background(), TestingServiceRLSSettings(), func(tx *sql.Tx) error {
 		return tx.QueryRowContext(context.Background(), query, value).Scan(
 			&purchase.ID,
 			&purchase.UserID,

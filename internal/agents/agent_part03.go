@@ -29,10 +29,10 @@ func (s *Service) advanceLocked(ctx context.Context, session *Session) error {
 		SpaceRecords: session.SpaceRecords,
 		SpaceSection: session.SpaceSection,
 	}
-	if requestSizeBytes(request) > MaxProviderRequestBytes {
+	if TestingRequestSizeBytes(request) > MaxProviderRequestBytes {
 		return ErrInvalidRequest("Agent request context is too large; start a new conversation")
 	}
-	selectedProvider := resolveAgentProvider(s.provider, session.AgentTier)
+	selectedProvider := TestingResolveAgentProvider(s.provider, session.AgentTier)
 	if session.ModelID != "" {
 		if !GatewayModelAvailable(ctx, session.ModelID) {
 			return ErrModelUnavailable
@@ -47,7 +47,7 @@ func (s *Service) advanceLocked(ctx context.Context, session *Session) error {
 			return providerErr
 		}
 	}
-	provider, model := providerStatus(selectedProvider)
+	provider, model := TestingProviderStatus(selectedProvider)
 	idempotencyKey := fmt.Sprintf("%s:%d", session.ID, session.nextSequence+1)
 	if session.BillingScope != "" {
 		idempotencyKey = fmt.Sprintf("%s:%d", session.BillingScope, session.ProviderCallsThisTurn)
@@ -76,7 +76,7 @@ func (s *Service) advanceLocked(ctx context.Context, session *Session) error {
 		session.appendEvent(AgentEvent{Type: EventError, Message: "The agent could not complete this request."})
 		return nil
 	}
-	response.Citations = groundedAgentCitations(request, response.Citations)
+	response.Citations = TestingGroundedAgentCitations(request, response.Citations)
 	settlement := UsageSettlement{}
 	if reservation != nil {
 		settlement, err = s.meter.Settle(reservation, idempotencyKey+":settle", hostedAIMeterAgent, provider, model, response.Usage)
@@ -96,7 +96,7 @@ func (s *Service) advanceLocked(ctx context.Context, session *Session) error {
 			session.appendEvent(AgentEvent{Type: EventError, Message: "The agent reached the tool step limit. Send a new message to continue."})
 			return nil
 		}
-		requests, rejected := authorizeToolRequests(session.Capabilities, response.ToolRequests)
+		requests, rejected := TestingAuthorizeToolRequests(session.Capabilities, response.ToolRequests)
 		if !session.AllowTools {
 			rejected += len(requests)
 			requests = nil
@@ -140,7 +140,7 @@ func (s *Service) advanceLocked(ctx context.Context, session *Session) error {
 	return nil
 }
 
-func authorizeToolRequests(manifest ToolManifest, requests []ToolRequest) ([]ToolRequest, int) {
+func TestingAuthorizeToolRequests(manifest ToolManifest, requests []ToolRequest) ([]ToolRequest, int) {
 	allowed := make(map[string]ToolDefinition, len(manifest.Tools))
 	for _, definition := range manifest.Tools {
 		definition.Name = strings.TrimSpace(definition.Name)
@@ -196,11 +196,11 @@ func providerCallLimit(session *Session) int {
 }
 
 func estimateRequestTokens(request ModelRequest) int64 {
-	characters := requestSizeBytes(request)
+	characters := TestingRequestSizeBytes(request)
 	return int64(characters/4 + 256)
 }
 
-func requestSizeBytes(request ModelRequest) int {
+func TestingRequestSizeBytes(request ModelRequest) int {
 	characters := 0
 	// The system prompt and the Space blocks are part of the payload the provider
 	// is sent, so they have to be counted here. Omitting them made the

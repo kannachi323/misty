@@ -37,19 +37,19 @@ type Server struct {
 }
 
 func CreateServer() (*Server, error) {
-	if err := validateProductionEnvironment(); err != nil {
+	if err := TestingValidateProductionEnvironment(); err != nil {
 		return nil, fmt.Errorf("validate production environment: %w", err)
 	}
 	warnOnInsecureBillingConfiguration()
-	passwordResetRedirectURL, err := passwordResetRedirectURLFromEnv()
+	passwordResetRedirectURL, err := TestingPasswordResetRedirectURLFromEnv()
 	if err != nil {
 		return nil, err
 	}
-	passwordResetStartURL, err := passwordResetStartURLFromEnv()
+	passwordResetStartURL, err := TestingPasswordResetStartURLFromEnv()
 	if err != nil {
 		return nil, err
 	}
-	stripeWebhookPath, err := stripeWebhookPathFromEnv()
+	stripeWebhookPath, err := TestingStripeWebhookPathFromEnv()
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func CreateServer() (*Server, error) {
 		),
 		serveragent.WithUsageMeter(appbilling.NewCreditMeter(s.Database)),
 	)
-	s.LibraryStore, err = libraryStoreFromEnv()
+	s.LibraryStore, err = TestingLibraryStoreFromEnv()
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +138,7 @@ func CreateServer() (*Server, error) {
 		invitationBaseURL = "https://mistysys.com/invite"
 	}
 	s.Spaces.SetInvitationSender(emailSender, invitationBaseURL)
-	s.HealthMonitor = newHealthMonitor(s)
+	s.HealthMonitor = TestingNewHealthMonitor(s)
 
 	return s, nil
 }

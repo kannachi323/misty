@@ -15,7 +15,7 @@ type SlidingWindowLimiter struct {
 	// maxKeys bounds the tracked callers. Without it, a caller that varies its
 	// key (a spoofed address, a sprayed path) grows this map until the process
 	// is killed — the limiter becomes the denial of service.
-	maxKeys int
+	TestingMaxKeys int
 }
 
 type ForgotPasswordRateLimiter struct {
@@ -28,12 +28,12 @@ type RateLimitPolicy struct {
 }
 
 type APIRateLimiter struct {
-	mu            sync.Mutex
-	now           func() time.Time
-	defaultGET    RateLimitPolicy
-	defaultWrite  RateLimitPolicy
-	routePolicies map[string]RateLimitPolicy
-	limiters      map[string]*SlidingWindowLimiter
+	TestingMu            sync.Mutex
+	TestingNow           func() time.Time
+	defaultGET           RateLimitPolicy
+	defaultWrite         RateLimitPolicy
+	TestingRoutePolicies map[string]RateLimitPolicy
+	TestingLimiters      map[string]*SlidingWindowLimiter
 	// abuse escalates repeated rejections into a temporary block.
 	abuse *AbuseGuard
 }
@@ -53,10 +53,10 @@ func NewSlidingWindowLimiter(limit int, window time.Duration) *SlidingWindowLimi
 	}
 
 	return &SlidingWindowLimiter{
-		limit:   limit,
-		window:  window,
-		history: make(map[string][]time.Time),
-		maxKeys: defaultLimiterMaxKeys,
+		limit:          limit,
+		window:         window,
+		history:        make(map[string][]time.Time),
+		TestingMaxKeys: defaultLimiterMaxKeys,
 	}
 }
 
@@ -74,10 +74,10 @@ func NewForgotPasswordRateLimiter(limit int, window time.Duration) *ForgotPasswo
 
 func NewAPIRateLimiter() *APIRateLimiter {
 	return &APIRateLimiter{
-		now:          time.Now,
+		TestingNow:   time.Now,
 		defaultGET:   RateLimitPolicy{Limit: 120, Window: time.Minute},
 		defaultWrite: RateLimitPolicy{Limit: 30, Window: time.Minute},
-		routePolicies: map[string]RateLimitPolicy{
+		TestingRoutePolicies: map[string]RateLimitPolicy{
 			"POST /register":                                            {Limit: 10, Window: time.Minute},
 			"POST /login":                                               {Limit: 20, Window: time.Minute},
 			"POST /waitlist":                                            {Limit: 10, Window: time.Minute},
@@ -132,7 +132,7 @@ func NewAPIRateLimiter() *APIRateLimiter {
 			// at a third-party consent screen.
 			"POST /spaces/{spaceID}/integrations/{provider}/authorize": {Limit: 10, Window: time.Minute},
 		},
-		limiters: make(map[string]*SlidingWindowLimiter),
+		TestingLimiters: make(map[string]*SlidingWindowLimiter),
 	}
 }
 
@@ -148,12 +148,12 @@ func (l *SlidingWindowLimiter) Allow(key string, now time.Time) (bool, time.Dura
 		}
 	}
 
-	if len(requests) == 0 && len(l.history) >= l.maxKeys {
+	if len(requests) == 0 && len(l.history) >= l.TestingMaxKeys {
 		// A new caller arriving at capacity: drop entries whose window has
 		// fully elapsed, which is the common case under a spray.
 		l.purgeExpired(cutoff)
 	}
-	if len(requests) == 0 && len(l.history) >= l.maxKeys {
+	if len(requests) == 0 && len(l.history) >= l.TestingMaxKeys {
 		// Still full of live entries, so this is sustained abuse rather than
 		// churn. Refuse rather than grow without bound.
 		return false, l.window
@@ -203,18 +203,18 @@ func (l *APIRateLimiter) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		path := normalizeRateLimitPath(r.URL.Path)
+		path := TestingNormalizeRateLimitPath(r.URL.Path)
 		policy := l.policyFor(r.Method, path)
 		limiter := l.limiterFor(r.Method, path, policy)
 		// Cost-bearing routes are charged to the account, so spreading a
 		// credential across many addresses buys no extra budget. Everything
 		// else stays keyed on the address, which is the only identity an
 		// unauthenticated caller has.
-		key := clientIPFromRequest(r)
+		key := TestingClientIPFromRequest(r)
 		if costBearingRoutes[path] {
-			key = rateLimitIdentity(r)
+			key = TestingRateLimitIdentity(r)
 		}
-		allowed, retryAfter := limiter.Allow(key, l.now())
+		allowed, retryAfter := limiter.Allow(key, l.TestingNow())
 		if !allowed {
 			if l.abuse != nil {
 				l.abuse.RecordRejection(key)
@@ -229,7 +229,7 @@ func (l *APIRateLimiter) Middleware(next http.Handler) http.Handler {
 }
 
 func (l *APIRateLimiter) policyFor(method, path string) RateLimitPolicy {
-	if policy, ok := l.routePolicies[method+" "+path]; ok {
+	if policy, ok := l.TestingRoutePolicies[method+" "+path]; ok {
 		return policy
 	}
 	if method == http.MethodGet {
@@ -241,4 +241,4 @@ func (l *APIRateLimiter) policyFor(method, path string) RateLimitPolicy {
 // maxTrackedRoutes bounds the limiters map. Real deployments register far
 // fewer route shapes; anything beyond this is a caller inventing paths, and
 // those share one overflow bucket instead of allocating unboundedly.
-const maxTrackedRoutes = 512
+const TestingMaxTrackedRoutes = 512

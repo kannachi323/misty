@@ -22,7 +22,7 @@ func (s *SmartLibraryService) SetAssetTags() http.HandlerFunc {
 		var body struct {
 			Tags []string `json:"tags"`
 		}
-		if decodeAIJSON(w, r, &body) != nil || !validOpaqueID(folderID, "slf_") || !validOpaqueID(assetID, "asset_") {
+		if decodeAIJSON(w, r, &body) != nil || !TestingValidOpaqueID(folderID, "slf_") || !TestingValidOpaqueID(assetID, "asset_") {
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
 		}
@@ -106,7 +106,7 @@ func (s *SmartLibraryService) searchHandler(folderFromPath bool) http.HandlerFun
 			return
 		}
 		body.Query = strings.TrimSpace(body.Query)
-		if body.Query == "" || len(body.Query) > 512 || utf8.RuneCountInString(body.Query) > 256 || (body.FolderID != "" && !validOpaqueID(body.FolderID, "slf_")) {
+		if body.Query == "" || len(body.Query) > 512 || utf8.RuneCountInString(body.Query) > 256 || (body.FolderID != "" && !TestingValidOpaqueID(body.FolderID, "slf_")) {
 			http.Error(w, "invalid request", 400)
 			return
 		}
@@ -163,7 +163,7 @@ func (s *SmartLibraryService) IndexStatus() http.HandlerFunc {
 			return
 		}
 		folderID := strings.TrimSpace(r.URL.Query().Get("folderId"))
-		if folderID != "" && !validOpaqueID(folderID, "slf_") {
+		if folderID != "" && !TestingValidOpaqueID(folderID, "slf_") {
 			http.Error(w, "invalid request", 400)
 			return
 		}
@@ -189,7 +189,7 @@ func (s *SmartLibraryService) PlanReindex() http.HandlerFunc {
 			Limit         int    `json:"limit,omitempty"`
 			TargetVersion int    `json:"targetVersion,omitempty"`
 		}
-		if decodeAIJSON(w, r, &body) != nil || (body.FolderID != "" && !validOpaqueID(body.FolderID, "slf_")) || len(body.Cursor) > 200 || (body.TargetVersion != 0 && body.TargetVersion != serveragent.SmartLibraryIndexVersion) {
+		if decodeAIJSON(w, r, &body) != nil || (body.FolderID != "" && !TestingValidOpaqueID(body.FolderID, "slf_")) || len(body.Cursor) > 200 || (body.TargetVersion != 0 && body.TargetVersion != serveragent.SmartLibraryIndexVersion) {
 			http.Error(w, "invalid request", 400)
 			return
 		}

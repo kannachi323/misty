@@ -12,9 +12,9 @@ import (
 )
 
 const (
-	stripePurchaseStatusCompleted = "completed"
-	stripePurchaseStatusRefunded  = "refunded"
-	stripePurchaseStatusDisputed  = "disputed"
+	TestingStripePurchaseStatusCompleted = "completed"
+	TestingStripePurchaseStatusRefunded  = "refunded"
+	stripePurchaseStatusDisputed         = "disputed"
 )
 
 type checkoutCompletedEvent struct {

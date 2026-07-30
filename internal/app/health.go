@@ -14,7 +14,7 @@ import (
 
 const healthCacheTTL = 15 * time.Second
 
-type healthCheck struct {
+type TestingHealthCheck struct {
 	Status     string `json:"status"`
 	Mode       string `json:"mode"`
 	Critical   bool   `json:"critical"`
@@ -22,26 +22,26 @@ type healthCheck struct {
 	DurationMS int64  `json:"duration_ms,omitempty"`
 }
 
-type healthSnapshot struct {
-	Status         string                 `json:"status"`
-	Version        string                 `json:"version"`
-	Environment    string                 `json:"environment"`
-	ReleaseChannel string                 `json:"release_channel"`
-	GeneratedAt    time.Time              `json:"generated_at"`
-	UptimeSeconds  int64                  `json:"uptime_seconds"`
-	Checks         map[string]healthCheck `json:"checks"`
+type TestingHealthSnapshot struct {
+	Status         string                        `json:"status"`
+	Version        string                        `json:"version"`
+	Environment    string                        `json:"environment"`
+	ReleaseChannel string                        `json:"release_channel"`
+	GeneratedAt    time.Time                     `json:"generated_at"`
+	UptimeSeconds  int64                         `json:"uptime_seconds"`
+	Checks         map[string]TestingHealthCheck `json:"checks"`
 }
 
 type healthMonitor struct {
 	server    *Server
 	startedAt time.Time
 	mu        sync.Mutex
-	cached    healthSnapshot
+	cached    TestingHealthSnapshot
 	status    int
 	expiresAt time.Time
 }
 
-func newHealthMonitor(server *Server) *healthMonitor {
+func TestingNewHealthMonitor(server *Server) *healthMonitor {
 	return &healthMonitor{server: server, startedAt: time.Now().UTC()}
 }
 
@@ -56,7 +56,7 @@ func (monitor *healthMonitor) Handler() http.HandlerFunc {
 	}
 }
 
-func (monitor *healthMonitor) snapshot(parent context.Context) (healthSnapshot, int) {
+func (monitor *healthMonitor) snapshot(parent context.Context) (TestingHealthSnapshot, int) {
 	monitor.mu.Lock()
 	defer monitor.mu.Unlock()
 	if time.Now().UTC().Before(monitor.expiresAt) {
@@ -69,9 +69,9 @@ func (monitor *healthMonitor) snapshot(parent context.Context) (healthSnapshot, 
 	return monitor.cached, monitor.status
 }
 
-func (monitor *healthMonitor) evaluate(ctx context.Context) (healthSnapshot, int) {
+func (monitor *healthMonitor) evaluate(ctx context.Context) (TestingHealthSnapshot, int) {
 	now := time.Now().UTC()
-	checks := map[string]healthCheck{}
+	checks := map[string]TestingHealthCheck{}
 	databaseOK := false
 	checks["database"] = activeHealthCheck(ctx, true, func(ctx context.Context) error {
 		if monitor.server == nil || monitor.server.Database == nil || monitor.server.Database.Conn == nil {
@@ -96,7 +96,7 @@ func (monitor *healthMonitor) evaluate(ctx context.Context) (healthSnapshot, int
 		return monitor.server.Realtime.Health()
 	})
 
-	checks["public_api"] = publicAPIConfigurationCheck()
+	checks["public_api"] = TestingPublicAPIConfigurationCheck()
 	agentGatewayCheck := environmentConfigurationCheck("AI_GATEWAY_API_KEY|VERCEL_OIDC_TOKEN")
 	checks["agent_gateway"] = agentGatewayCheck
 	// Pre-rename key, still emitted so any external dashboard or alert watching
@@ -119,7 +119,7 @@ func (monitor *healthMonitor) evaluate(ctx context.Context) (healthSnapshot, int
 	checks["notion"] = environmentConfigurationCheck("NOTION_CLIENT_ID", "NOTION_CLIENT_SECRET", "NOTION_WEBHOOK_VERIFICATION_TOKEN")
 	checks["discord"] = monitor.discordHealthCheck(ctx, databaseOK)
 
-	overall, status := summarizeHealth(checks)
+	overall, status := TestingSummarizeHealth(checks)
 	version := strings.TrimSpace(os.Getenv("MISTY_SERVER_VERSION"))
 	if version == "" {
 		version = "development"
@@ -132,16 +132,16 @@ func (monitor *healthMonitor) evaluate(ctx context.Context) (healthSnapshot, int
 	if release == "" {
 		release = environment
 	}
-	return healthSnapshot{
+	return TestingHealthSnapshot{
 		Status: overall, Version: version, Environment: environment,
 		ReleaseChannel: release, GeneratedAt: now,
 		UptimeSeconds: int64(now.Sub(monitor.startedAt).Seconds()), Checks: checks,
 	}, status
 }
 
-func activeHealthCheck(ctx context.Context, critical bool, check func(context.Context) error) healthCheck {
+func activeHealthCheck(ctx context.Context, critical bool, check func(context.Context) error) TestingHealthCheck {
 	started := time.Now()
-	result := healthCheck{Status: "ok", Mode: "active", Critical: critical}
+	result := TestingHealthCheck{Status: "ok", Mode: "active", Critical: critical}
 	if err := check(ctx); err != nil {
 		result.Status = "unavailable"
 		result.Message = "dependency check failed"
@@ -150,8 +150,8 @@ func activeHealthCheck(ctx context.Context, critical bool, check func(context.Co
 	return result
 }
 
-func environmentConfigurationCheck(groups ...string) healthCheck {
-	result := healthCheck{Status: "ready", Mode: "configuration", Critical: false}
+func environmentConfigurationCheck(groups ...string) TestingHealthCheck {
+	result := TestingHealthCheck{Status: "ready", Mode: "configuration", Critical: false}
 	for _, group := range groups {
 		configured := false
 		for _, key := range strings.Split(group, "|") {
@@ -169,8 +169,8 @@ func environmentConfigurationCheck(groups ...string) healthCheck {
 	return result
 }
 
-func publicAPIConfigurationCheck() healthCheck {
-	result := healthCheck{Status: "ready", Mode: "configuration", Critical: false}
+func TestingPublicAPIConfigurationCheck() TestingHealthCheck {
+	result := TestingHealthCheck{Status: "ready", Mode: "configuration", Critical: false}
 	value := strings.TrimSpace(os.Getenv("MISTY_PUBLIC_API_URL"))
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
@@ -183,22 +183,22 @@ func publicAPIConfigurationCheck() healthCheck {
 	return result
 }
 
-func (monitor *healthMonitor) discordHealthCheck(ctx context.Context, databaseOK bool) healthCheck {
+func (monitor *healthMonitor) discordHealthCheck(ctx context.Context, databaseOK bool) TestingHealthCheck {
 	configured := environmentConfigurationCheck("DISCORD_CLIENT_ID", "DISCORD_CLIENT_SECRET", "DISCORD_BOT_TOKEN")
 	if configured.Status != "ready" || !databaseOK || monitor.server == nil || monitor.server.Database == nil {
 		return configured
 	}
 	state, err := monitor.server.Database.ProviderGatewayState(ctx, "discord")
 	if err != nil {
-		return healthCheck{Status: "unavailable", Mode: "active", Critical: false, Message: "gateway state unavailable"}
+		return TestingHealthCheck{Status: "unavailable", Mode: "active", Critical: false, Message: "gateway state unavailable"}
 	}
 	if state.Status != "connected" || state.LastHeartbeatAt == nil || state.LastHeartbeatAt.Before(time.Now().UTC().Add(-2*time.Minute)) {
-		return healthCheck{Status: "degraded", Mode: "active", Critical: false, Message: "gateway disconnected or stale"}
+		return TestingHealthCheck{Status: "degraded", Mode: "active", Critical: false, Message: "gateway disconnected or stale"}
 	}
-	return healthCheck{Status: "ok", Mode: "active", Critical: false}
+	return TestingHealthCheck{Status: "ok", Mode: "active", Critical: false}
 }
 
-func summarizeHealth(checks map[string]healthCheck) (string, int) {
+func TestingSummarizeHealth(checks map[string]TestingHealthCheck) (string, int) {
 	overall := "ok"
 	for _, check := range checks {
 		if check.Critical && check.Status != "ok" {

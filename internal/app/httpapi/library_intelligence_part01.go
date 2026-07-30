@@ -128,7 +128,7 @@ func (s *SpaceLibraryService) libraryIntelligenceAsset(ctx context.Context, job 
 		if job.ByteSize > serveragent.SmartLibraryMaxAssetBytes {
 			return asset, errLibraryUnsupportedIntelligenceMedia
 		}
-		reader, metadata, err := s.store.Open(ctx, job.ObjectKey)
+		reader, metadata, err := s.TestingStore.Open(ctx, job.ObjectKey)
 		if err != nil {
 			return asset, err
 		}
@@ -142,7 +142,7 @@ func (s *SpaceLibraryService) libraryIntelligenceAsset(ctx context.Context, job 
 		}
 		asset.AssetKind, asset.MimeType, asset.Bytes = "image", mimeType, data
 	case strings.HasPrefix(mimeType, "text/") && job.ByteSize <= serveragent.SmartLibraryMaxTextBytes:
-		reader, _, err := s.store.Open(ctx, job.ObjectKey)
+		reader, _, err := s.TestingStore.Open(ctx, job.ObjectKey)
 		if err != nil {
 			return asset, err
 		}

@@ -30,8 +30,8 @@ func (s *MediaSearchService) IndexChunk() http.HandlerFunc {
 			writeJSON(w, 503, map[string]any{"code": "media_search_unavailable", "message": "Media Search is not configured. Weekly usage was not charged."})
 			return
 		}
-		var body mediaIndexRequest
-		if decodeAIJSONWithLimit(w, r, &body, mediaMaxJSONBytes) != nil || !validMediaIndexRequest(body) {
+		var body TestingMediaIndexRequest
+		if TestingDecodeAIJSONWithLimit(w, r, &body, TestingMediaMaxJSONBytes) != nil || !TestingValidMediaIndexRequest(body) {
 			http.Error(w, "invalid request", 400)
 			return
 		}
@@ -39,7 +39,7 @@ func (s *MediaSearchService) IndexChunk() http.HandlerFunc {
 		var err error
 		if body.AudioBase64 != nil {
 			audio, err = base64.StdEncoding.DecodeString(*body.AudioBase64)
-			if err != nil || len(audio) > 2<<20 || !validMP3Preview(audio) {
+			if err != nil || len(audio) > 2<<20 || !TestingValidMP3Preview(audio) {
 				http.Error(w, "invalid audio preview", 400)
 				return
 			}
@@ -51,7 +51,7 @@ func (s *MediaSearchService) IndexChunk() http.HandlerFunc {
 			raw, decodeErr := base64.StdEncoding.DecodeString(frame.Base64)
 			totalBytes += len(raw)
 			id := body.AssetID + "_frame_" + strconv.Itoa(index)
-			if decodeErr != nil || frame.MimeType != "image/jpeg" || len(raw) > 512<<10 || !validJPEGPreview(raw) || frame.TimestampMS < body.StartMS || frame.TimestampMS >= body.EndMS {
+			if decodeErr != nil || frame.MimeType != "image/jpeg" || len(raw) > 512<<10 || !TestingValidJPEGPreview(raw) || frame.TimestampMS < body.StartMS || frame.TimestampMS >= body.EndMS {
 				http.Error(w, "invalid media frame", 400)
 				return
 			}
@@ -62,7 +62,7 @@ func (s *MediaSearchService) IndexChunk() http.HandlerFunc {
 			http.Error(w, "media chunk too large", http.StatusRequestEntityTooLarge)
 			return
 		}
-		releaseProviderSlot, allowed := s.acquireProviderSlot(userID)
+		releaseProviderSlot, allowed := s.TestingAcquireProviderSlot(userID)
 		if !allowed {
 			w.Header().Set("Retry-After", "2")
 			writeJSON(w, http.StatusTooManyRequests, map[string]any{"code": "media_search_busy", "message": "Another media chunk is currently processing. Misty will retry it shortly.", "retry_after_seconds": 2})
@@ -126,7 +126,7 @@ func (s *MediaSearchService) IndexChunk() http.HandlerFunc {
 			vectors := [][]float64{}
 			if len(texts) > 0 {
 				var embedErr error
-				vectors, usage, embedErr = embedMediaTexts(r.Context(), s.analyzer, texts)
+				vectors, usage, embedErr = TestingEmbedMediaTexts(r.Context(), s.analyzer, texts)
 				addUsage(&totalUsage, usage)
 				if embedErr != nil {
 					_ = s.database.FailMediaSearchChunk(userID, body.DeviceID, body.AssetID, body.ChunkIndex, "embedding_failed")
@@ -164,7 +164,7 @@ func (s *MediaSearchService) IndexChunk() http.HandlerFunc {
 					visualTexts = append(visualTexts, content)
 				}
 			}
-			embeddings, usage, embedErr := embedMediaTexts(r.Context(), s.analyzer, visualTexts)
+			embeddings, usage, embedErr := TestingEmbedMediaTexts(r.Context(), s.analyzer, visualTexts)
 			addUsage(&totalUsage, usage)
 			if embedErr != nil {
 				_ = s.database.FailMediaSearchChunk(userID, body.DeviceID, body.AssetID, body.ChunkIndex, "visual_embedding_failed")
@@ -181,7 +181,7 @@ func (s *MediaSearchService) IndexChunk() http.HandlerFunc {
 					continue
 				}
 				timestamp := frameTimes[frame.AssetID]
-				visualStart, visualEnd := visualSegmentBounds(timestamp, body.EndMS)
+				visualStart, visualEnd := TestingVisualSegmentBounds(timestamp, body.EndMS)
 				content := strings.TrimSpace(item.SearchDocument())
 				if content == "" {
 					continue
@@ -213,10 +213,10 @@ func (s *MediaSearchService) IndexChunk() http.HandlerFunc {
 // acquireProviderSlot bounds provider fan-out independently of the HTTP rate
 // limiter. A device runs one sequential worker, but this also protects against
 // multiple devices or clients racing under the same account.
-func (s *MediaSearchService) acquireProviderSlot(userID string) (func(), bool) {
+func (s *MediaSearchService) TestingAcquireProviderSlot(userID string) (func(), bool) {
 	s.guardMu.Lock()
 	defer s.guardMu.Unlock()
-	if _, busy := s.inFlightUsers[userID]; busy || s.inFlightTotal >= aiGlobalMaxConcurrent {
+	if _, busy := s.inFlightUsers[userID]; busy || s.inFlightTotal >= TestingAiGlobalMaxConcurrent {
 		return nil, false
 	}
 	s.inFlightUsers[userID] = struct{}{}
@@ -233,7 +233,7 @@ func (s *MediaSearchService) acquireProviderSlot(userID string) (func(), bool) {
 
 // embedMediaTexts absorbs one transient embedding failure before failing the
 // customer-visible chunk. The same credit reservation covers both attempts.
-func embedMediaTexts(ctx context.Context, analyzer *serveragent.SmartLibraryAnalyzer, texts []string) ([][]float64, serveragent.ModelUsage, error) {
+func TestingEmbedMediaTexts(ctx context.Context, analyzer *serveragent.SmartLibraryAnalyzer, texts []string) ([][]float64, serveragent.ModelUsage, error) {
 	if len(texts) == 0 {
 		return nil, serveragent.ModelUsage{}, nil
 	}

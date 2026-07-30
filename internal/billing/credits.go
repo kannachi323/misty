@@ -82,7 +82,7 @@ func ratesForModel(model string) modelRates {
 	}
 }
 
-func creditsForUsage(model string, usage agent.ModelUsage) int64 {
+func TestingCreditsForUsage(model string, usage agent.ModelUsage) int64 {
 	return bufferedHostedAICharge(providerCostForUsage(model, usage))
 }
 
@@ -131,7 +131,7 @@ func ProviderCostFromBufferedCharge(charge int64) int64 {
 }
 
 func HostedAIChargeForUsage(model string, usage agent.ModelUsage) int64 {
-	return creditsForUsage(model, usage)
+	return TestingCreditsForUsage(model, usage)
 }
 
 func ProviderCostForUsage(model string, usage agent.ModelUsage) int64 {
@@ -242,7 +242,7 @@ func (meter *CreditMeter) Reserve(userID, idempotencyKey, usageMeter, provider, 
 		tier = license.Tier
 	}
 	estimate := agent.ModelUsage{InputTokens: estimatedInputTokens, OutputTokens: maxOutputTokens, Estimated: true}
-	credits := creditsForUsage(model, estimate)
+	credits := TestingCreditsForUsage(model, estimate)
 	reservation, wallet, err := meter.database.ReserveCredits(userID, tier, usageMeter, idempotencyKey, credits, meter.now())
 	if err != nil {
 		var insufficient db.HostedAILimitReachedError
@@ -264,7 +264,7 @@ func (meter *CreditMeter) Settle(reservation *agent.UsageReservation, idempotenc
 		usage.Estimated = true
 		usage.OutputTokens = 1
 	}
-	charge := creditsForUsage(model, usage)
+	charge := TestingCreditsForUsage(model, usage)
 	reserved := reservation.ReservedMicrousd
 	if reserved == 0 {
 		reserved = reservation.ReservedCredits

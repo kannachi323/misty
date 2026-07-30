@@ -37,18 +37,18 @@ func (NoopClient) SubscriptionRenewed(string, SubscriptionProperties)  {}
 func (NoopClient) SubscriptionCanceled(string, SubscriptionProperties) {}
 func (NoopClient) Close(context.Context)                               {}
 
-type postHogClient struct {
-	token         string
-	host          string
-	environment   string
-	serverVersion string
-	http          *http.Client
-	queue         chan capture
-	done          chan struct{}
-	closeOnce     sync.Once
+type TestingPostHogClient struct {
+	TestingToken         string
+	TestingHost          string
+	TestingEnvironment   string
+	TestingServerVersion string
+	TestingHttp          *http.Client
+	TestingQueue         chan TestingCapture
+	TestingDone          chan struct{}
+	closeOnce            sync.Once
 }
 
-type capture struct {
+type TestingCapture struct {
 	Event, DistinctID string
 	Properties        map[string]any
 }
@@ -65,18 +65,18 @@ func NewFromEnv() Client {
 	if err != nil || parsedHost.Scheme != "https" || parsedHost.Host == "" {
 		return NoopClient{}
 	}
-	client := &postHogClient{
-		token: token, host: host, environment: environment,
-		serverVersion: strings.TrimSpace(os.Getenv("MISTY_SERVER_VERSION")),
-		http:          &http.Client{Timeout: 3 * time.Second}, queue: make(chan capture, 256), done: make(chan struct{}),
+	client := &TestingPostHogClient{
+		TestingToken: token, TestingHost: host, TestingEnvironment: environment,
+		TestingServerVersion: strings.TrimSpace(os.Getenv("MISTY_SERVER_VERSION")),
+		TestingHttp:          &http.Client{Timeout: 3 * time.Second}, TestingQueue: make(chan TestingCapture, 256), TestingDone: make(chan struct{}),
 	}
-	go client.run()
+	go client.TestingRun()
 	return client
 }
 
-func (client *postHogClient) UserRegistered(userID, platform, channel string) {
+func (client *TestingPostHogClient) UserRegistered(userID, platform, channel string) {
 	properties := map[string]any{"registration_method": "email"}
-	if safePlatform(platform) {
+	if TestingSafePlatform(platform) {
 		properties["originating_platform"] = platform
 	}
 	if remoteReleaseChannel(channel) {
@@ -85,22 +85,22 @@ func (client *postHogClient) UserRegistered(userID, platform, channel string) {
 	client.enqueue("user_registered", userID, properties)
 }
 
-func (client *postHogClient) SubscriptionStarted(userID string, properties SubscriptionProperties) {
+func (client *TestingPostHogClient) SubscriptionStarted(userID string, properties SubscriptionProperties) {
 	client.subscription("subscription_started", userID, properties)
 }
 
-func (client *postHogClient) SubscriptionRenewed(userID string, properties SubscriptionProperties) {
+func (client *TestingPostHogClient) SubscriptionRenewed(userID string, properties SubscriptionProperties) {
 	client.subscription("subscription_renewed", userID, properties)
 }
 
-func (client *postHogClient) SubscriptionCanceled(userID string, properties SubscriptionProperties) {
+func (client *TestingPostHogClient) SubscriptionCanceled(userID string, properties SubscriptionProperties) {
 	client.subscription("subscription_canceled", userID, properties)
 }
 
-func (client *postHogClient) subscription(event, userID string, source SubscriptionProperties) {
+func (client *TestingPostHogClient) subscription(event, userID string, source SubscriptionProperties) {
 	properties := map[string]any{
-		"provider": "stripe", "plan_id": safePlan(source.PlanID), "billing_interval": safeInterval(source.BillingInterval),
-		"subscription_status": safeStatus(source.Status),
+		"provider": "stripe", "plan_id": TestingSafePlan(source.PlanID), "billing_interval": safeInterval(source.BillingInterval),
+		"subscription_status": TestingSafeStatus(source.Status),
 	}
 	if len(source.Currency) == 3 {
 		properties["currency"] = strings.ToLower(source.Currency)
@@ -111,43 +111,43 @@ func (client *postHogClient) subscription(event, userID string, source Subscript
 	client.enqueue(event, userID, properties)
 }
 
-func (client *postHogClient) enqueue(event, userID string, properties map[string]any) {
+func (client *TestingPostHogClient) enqueue(event, userID string, properties map[string]any) {
 	if strings.TrimSpace(userID) == "" {
 		return
 	}
-	properties["environment"] = client.environment
+	properties["environment"] = client.TestingEnvironment
 	properties["$geoip_disable"] = true
-	if client.serverVersion != "" {
-		properties["server_version"] = client.serverVersion
+	if client.TestingServerVersion != "" {
+		properties["server_version"] = client.TestingServerVersion
 	}
 	select {
-	case client.queue <- capture{Event: event, DistinctID: userID, Properties: properties}:
+	case client.TestingQueue <- TestingCapture{Event: event, DistinctID: userID, Properties: properties}:
 	default:
 	}
 }
 
-func (client *postHogClient) run() {
-	defer close(client.done)
-	for item := range client.queue {
+func (client *TestingPostHogClient) TestingRun() {
+	defer close(client.TestingDone)
+	for item := range client.TestingQueue {
 		client.send(item)
 	}
 }
 
-func (client *postHogClient) send(item capture) {
+func (client *TestingPostHogClient) send(item TestingCapture) {
 	payload, err := json.Marshal(map[string]any{
-		"api_key": client.token, "event": item.Event,
+		"api_key": client.TestingToken, "event": item.Event,
 		"properties": merge(item.Properties, map[string]any{"distinct_id": item.DistinctID}),
 		"timestamp":  time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	if err != nil {
 		return
 	}
-	request, err := http.NewRequest(http.MethodPost, client.host+"/i/v0/e/", bytes.NewReader(payload))
+	request, err := http.NewRequest(http.MethodPost, client.TestingHost+"/i/v0/e/", bytes.NewReader(payload))
 	if err != nil {
 		return
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := client.http.Do(request)
+	response, err := client.TestingHttp.Do(request)
 	if err != nil {
 		log.Printf("PostHog delivery failed: %s", sanitizedDeliveryError(err))
 		return
@@ -158,10 +158,10 @@ func (client *postHogClient) send(item capture) {
 	}
 }
 
-func (client *postHogClient) Close(ctx context.Context) {
-	client.closeOnce.Do(func() { close(client.queue) })
+func (client *TestingPostHogClient) Close(ctx context.Context) {
+	client.closeOnce.Do(func() { close(client.TestingQueue) })
 	select {
-	case <-client.done:
+	case <-client.TestingDone:
 	case <-ctx.Done():
 	}
 }
@@ -196,7 +196,7 @@ func remoteReleaseChannel(value string) bool {
 		return false
 	}
 }
-func safePlatform(value string) bool {
+func TestingSafePlatform(value string) bool {
 	switch value {
 	case "windows", "macos", "linux", "android", "ios":
 		return true
@@ -204,7 +204,7 @@ func safePlatform(value string) bool {
 		return false
 	}
 }
-func safePlan(value string) string {
+func TestingSafePlan(value string) string {
 	switch value {
 	case "personal", "pro", "max":
 		return value
@@ -220,7 +220,7 @@ func safeInterval(value string) string {
 		return "other"
 	}
 }
-func safeStatus(value string) string {
+func TestingSafeStatus(value string) string {
 	switch value {
 	case "trialing", "active", "past_due", "canceled", "expired":
 		return value

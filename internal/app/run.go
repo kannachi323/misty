@@ -67,7 +67,7 @@ func Run() {
 	}
 
 	log.Printf("Misty server running on :%s", port)
-	if err := runHTTPServer(newHTTPServer(":"+port, server.Router), stopWorkers); err != nil {
+	if err := runHTTPServer(TestingNewHTTPServer(":"+port, server.Router), stopWorkers); err != nil {
 		panic(err)
 	}
 	log.Println("Misty server stopped")

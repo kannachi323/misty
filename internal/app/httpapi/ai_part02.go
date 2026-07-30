@@ -33,7 +33,7 @@ func (s *AIService) Complete() http.HandlerFunc {
 		defer release()
 		text, usage, err := s.runtime.CompleteWithModelContext(r.Context(), userID, body.Prompt, db.CreditMeterAutomationAI, agent.InitialSelectedModelID)
 		if err != nil {
-			writeAIError(w, err)
+			TestingWriteAIError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"text": text, "model": agent.InitialSelectedModelID, "hosted_ai_used_ratio": usage.UsedRatio, "hosted_ai_reset_at": usage.ResetAt})
@@ -78,7 +78,7 @@ func (s *AIService) SendMessage() http.HandlerFunc {
 			return
 		}
 		if err := s.runtime.SendMessageWithTierContext(r.Context(), sessionID, userID, body, tier); err != nil {
-			writeAIError(w, err)
+			TestingWriteAIError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -99,7 +99,7 @@ func (s *AIService) Events() http.HandlerFunc {
 		after, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("after")), 10, 64)
 		events, err := s.runtime.Events(sessionID, userID, after)
 		if err != nil {
-			writeAIError(w, err)
+			TestingWriteAIError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"events": events})
@@ -116,7 +116,7 @@ func (s *AIService) SubmitToolResults() http.HandlerFunc {
 		var body struct {
 			Results []agent.ToolResult `json:"results"`
 		}
-		if err := decodeAIJSONWithLimit(w, r, &body, maxAIToolJSONBodyBytes); err != nil {
+		if err := TestingDecodeAIJSONWithLimit(w, r, &body, maxAIToolJSONBodyBytes); err != nil {
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
 		}
@@ -139,7 +139,7 @@ func (s *AIService) SubmitToolResults() http.HandlerFunc {
 			return
 		}
 		if err := s.runtime.SubmitToolResultsWithTierContext(r.Context(), sessionID, userID, body.Results, tier); err != nil {
-			writeAIError(w, err)
+			TestingWriteAIError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -171,13 +171,13 @@ func toolResultsContainDocuments(results []agent.ToolResult) bool {
 func (s *AIService) acquireProviderCall(w http.ResponseWriter, userID string) (func(), bool) {
 	release, retryAfter, allowed := s.guard.AcquireProviderCall(userID)
 	if !allowed {
-		writeAIRateLimit(w, retryAfter)
+		TestingWriteAIRateLimit(w, retryAfter)
 		return nil, false
 	}
 	return release, true
 }
 
-func writeAIRateLimit(w http.ResponseWriter, retryAfter time.Duration) {
+func TestingWriteAIRateLimit(w http.ResponseWriter, retryAfter time.Duration) {
 	seconds := retryAfterSeconds(retryAfter)
 	w.Header().Set("Retry-After", strconv.Itoa(seconds))
 	writeJSON(w, http.StatusTooManyRequests, map[string]any{
@@ -194,14 +194,14 @@ func (s *AIService) agentTierForUser(userID string) (agent.AgentTier, error) {
 	if license == nil {
 		return agent.TierLow, nil
 	}
-	return agentTierForLicenseTier(license.Tier), nil
+	return TestingAgentTierForLicenseTier(license.Tier), nil
 }
 
 // agentTierForLicenseTier deliberately routes every paid plan to the same tier;
 // TestAutomaticRoutingIsTheSameForEveryPlan guards that. The parameter is the
 // seam for per-plan routing if tiers are ever priced differently, so it stays
 // even though it is currently unused.
-func agentTierForLicenseTier(_ db.Tier) agent.AgentTier {
+func TestingAgentTierForLicenseTier(_ db.Tier) agent.AgentTier {
 	return agent.TierMed
 }
 
@@ -213,7 +213,7 @@ func (s *AIService) Cancel() http.HandlerFunc {
 		}
 		sessionID := strings.TrimSpace(chi.URLParam(r, "sessionID"))
 		if err := s.runtime.Cancel(sessionID, userID); err != nil {
-			writeAIError(w, err)
+			TestingWriteAIError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -250,5 +250,5 @@ func (s *AIService) requireUser(w http.ResponseWriter, r *http.Request) (string,
 }
 
 func decodeAIJSON(w http.ResponseWriter, r *http.Request, dst any) error {
-	return decodeAIJSONWithLimit(w, r, dst, maxAIJSONBodyBytes)
+	return TestingDecodeAIJSONWithLimit(w, r, dst, TestingMaxAIJSONBodyBytes)
 }

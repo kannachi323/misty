@@ -39,7 +39,7 @@ type LibraryIntelligenceResult struct {
 }
 
 func (db *Database) QueueLibraryIntelligenceForItem(ctx context.Context, userID, spaceID, itemID string) error {
-	return db.spaceTx(ctx, func(tx *sql.Tx) error {
+	return db.TestingSpaceTx(ctx, func(tx *sql.Tx) error {
 		if err := requireSpacePermissionTx(ctx, tx, userID, spaceID, PermissionLibraryView); err != nil {
 			return err
 		}
@@ -70,7 +70,7 @@ func (db *Database) ClaimLibraryIntelligenceJob(ctx context.Context, workerID st
 		return nil, ErrLibraryInvalid
 	}
 	out := &LibraryIntelligenceJob{LeaseToken: "lease_" + uuid.NewString()}
-	err := db.spaceTx(ctx, func(tx *sql.Tx) error {
+	err := db.TestingSpaceTx(ctx, func(tx *sql.Tx) error {
 		var rawTags []byte
 		if err := tx.QueryRowContext(ctx, `WITH candidate AS (
 			SELECT id FROM library_processing_jobs WHERE job_kind='ai' AND (state='queued' AND available_at<=NOW() OR state IN ('leased','running') AND lease_expires_at<=NOW()) ORDER BY priority DESC,created_at FOR UPDATE SKIP LOCKED LIMIT 1
@@ -93,7 +93,7 @@ func (db *Database) CompleteLibraryIntelligenceJob(ctx context.Context, job *Lib
 	if job == nil || job.ID == "" || job.LeaseToken == "" || len(result.Metadata) < 2 || len(result.Metadata) > 256<<10 || !json.Valid(result.Metadata) || len(result.SearchText) > 256<<10 || len(result.Embedding) != 0 && (len(result.Embedding) != 768 || !validFiniteVector(result.Embedding)) {
 		return ErrLibraryInvalid
 	}
-	return db.spaceTx(ctx, func(tx *sql.Tx) error {
+	return db.TestingSpaceTx(ctx, func(tx *sql.Tx) error {
 		var aiEnabled, semanticEnabled bool
 		if err := tx.QueryRowContext(ctx, `SELECT ai_enabled,semantic_search_enabled FROM space_library_intelligence_policies WHERE space_id=$1`, job.SpaceID).Scan(&aiEnabled, &semanticEnabled); err != nil {
 			return err
@@ -140,7 +140,7 @@ func (db *Database) FailLibraryIntelligenceJob(ctx context.Context, job *Library
 	if job == nil || job.ID == "" || job.LeaseToken == "" || strings.TrimSpace(code) == "" {
 		return ErrLibraryInvalid
 	}
-	return db.spaceTx(ctx, func(tx *sql.Tx) error {
+	return db.TestingSpaceTx(ctx, func(tx *sql.Tx) error {
 		if code == "hosted_ai_limit_reached" {
 			_, err := tx.ExecContext(ctx, `UPDATE library_processing_jobs SET state='queued',error_code=$1,
 				available_at=COALESCE((SELECT reset_at FROM hosted_ai_wallets WHERE user_id=$2),NOW()+INTERVAL '7 days'),
@@ -174,7 +174,7 @@ func (db *Database) SearchSpaceLibraryIntelligence(ctx context.Context, userID, 
 		limit = 50
 	}
 	items := []SpaceLibraryItem{}
-	err := db.spaceTx(ctx, func(tx *sql.Tx) error {
+	err := db.TestingSpaceTx(ctx, func(tx *sql.Tx) error {
 		if err := requireSpacePermissionTx(ctx, tx, userID, spaceID, PermissionLibraryView); err != nil {
 			return err
 		}

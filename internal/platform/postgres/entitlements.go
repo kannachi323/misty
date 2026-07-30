@@ -117,7 +117,7 @@ func addSpaceMembershipTx(ctx context.Context, tx *sql.Tx, spaceID, userID, role
 
 func (db *Database) EntitlementsForUser(ctx context.Context, userID string) (PlanEntitlements, error) {
 	var entitlements PlanEntitlements
-	err := db.withRLSContext(ctx, userRLSSettings(userID), func(tx *sql.Tx) error {
+	err := db.TestingWithRLSContext(ctx, userRLSSettings(userID), func(tx *sql.Tx) error {
 		var err error
 		entitlements, err = entitlementsForUserTx(ctx, tx, userID, time.Now())
 		return err

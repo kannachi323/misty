@@ -59,8 +59,8 @@ func telemetryInterval(interval string) string {
 	return interval
 }
 
-func configuredSubscriptionPrice(priceID string) (db.Tier, BillingInterval, bool) {
-	var matched *priceKey
+func TestingConfiguredSubscriptionPrice(priceID string) (db.Tier, BillingInterval, bool) {
+	var matched *TestingPriceKey
 	for _, definition := range subscriptionPriceDefinitions {
 		if configured := strings.TrimSpace(os.Getenv(definition.env)); configured != "" && configured == strings.TrimSpace(priceID) {
 			if matched != nil {
@@ -73,7 +73,7 @@ func configuredSubscriptionPrice(priceID string) (db.Tier, BillingInterval, bool
 	if matched == nil {
 		return "", "", false
 	}
-	return matched.tier, matched.interval, true
+	return matched.TestingTier, matched.TestingInterval, true
 }
 
 func (service *StripeService) handleCheckoutCompleted(session *checkoutCompletedEvent) {
@@ -104,7 +104,7 @@ func (service *StripeService) handleCheckoutCompleted(session *checkoutCompleted
 		return
 	}
 	existingPurchase, _ := service.database.GetStripePurchaseByCheckoutSessionID(strings.TrimSpace(session.ID))
-	alreadyCaptured := !shouldCaptureSubscriptionStart(existingPurchase)
+	alreadyCaptured := !TestingShouldCaptureSubscriptionStart(existingPurchase)
 
 	if err := service.database.SetLicenseStateByID(licenseID, tier, db.LicenseStatusActive, nil); err != nil {
 		log.Printf("Failed to activate %s license %s: %v", tier, licenseID, err)
@@ -130,7 +130,7 @@ func (service *StripeService) handleCheckoutCompleted(session *checkoutCompleted
 		StripeChargeID:          chargeID,
 		Amount:                  session.AmountTotal,
 		Currency:                strings.ToLower(strings.TrimSpace(session.Currency)),
-		Status:                  stripePurchaseStatusCompleted,
+		Status:                  TestingStripePurchaseStatusCompleted,
 		EventSource:             "checkout.session.completed",
 	}); err != nil {
 		log.Printf("Failed to persist Stripe purchase for session %s: %v", session.ID, err)
@@ -146,8 +146,8 @@ func (service *StripeService) handleCheckoutCompleted(session *checkoutCompleted
 	log.Printf("Provisioned %s license for user %s", tier, userID)
 }
 
-func shouldCaptureSubscriptionStart(existing *db.StripePurchase) bool {
-	return existing == nil || existing.Status != stripePurchaseStatusCompleted
+func TestingShouldCaptureSubscriptionStart(existing *db.StripePurchase) bool {
+	return existing == nil || existing.Status != TestingStripePurchaseStatusCompleted
 }
 
 func (service *StripeService) isReplayedCompletedCheckoutAfterReversal(session *checkoutCompletedEvent) bool {
@@ -163,7 +163,7 @@ func (service *StripeService) isReplayedCompletedCheckoutAfterReversal(session *
 			return false
 		}
 	}
-	return purchase != nil && (purchase.Status == stripePurchaseStatusRefunded || purchase.Status == stripePurchaseStatusDisputed)
+	return purchase != nil && (purchase.Status == TestingStripePurchaseStatusRefunded || purchase.Status == stripePurchaseStatusDisputed)
 }
 
 func (service *StripeService) handleChargeRefunded(charge *refundedChargeEvent) {
@@ -183,11 +183,11 @@ func (service *StripeService) handleChargeRefunded(charge *refundedChargeEvent) 
 		log.Printf("No purchase found for refunded charge %s", charge.ID)
 		return
 	}
-	if purchase.Status == stripePurchaseStatusRefunded {
+	if purchase.Status == TestingStripePurchaseStatusRefunded {
 		return
 	}
 
-	if err := service.database.UpdateStripePurchaseStatus(purchase.ID, stripePurchaseStatusRefunded, "charge.refunded"); err != nil {
+	if err := service.database.UpdateStripePurchaseStatus(purchase.ID, TestingStripePurchaseStatusRefunded, "charge.refunded"); err != nil {
 		log.Printf("Failed to mark purchase %s refunded: %v", purchase.ID, err)
 		return
 	}
@@ -232,7 +232,7 @@ func (service *StripeService) analyticsEnabled(userID string) bool {
 	return err == nil && settings != nil && settings.AnalyticsEnabled
 }
 
-func tierFromMetadata(value string) (db.Tier, bool) {
+func TestingTierFromMetadata(value string) (db.Tier, bool) {
 	switch db.Tier(strings.ToLower(strings.TrimSpace(value))) {
 	case db.TierPro:
 		return db.TierPro, true
