@@ -14,7 +14,7 @@ Run the full suite with:
 ./test.sh
 ```
 
-When explicit `TEST_DB_*` variables are absent and the target DB host is local, the script starts `docker compose` Postgres, recreates `misty_server_test`, applies `db/migrations`, and then runs `go test ./... -count=1`.
+When explicit `TEST_DB_*` variables are absent and the target DB host is local, the script starts `docker compose` Postgres, recreates `misty_server_test`, applies `internal/platform/postgres/migrations`, and then runs `go test ./... -count=1`.
 
 Set `BOOTSTRAP_TEST_DB=0` to disable Docker/bootstrap behavior, or `BOOTSTRAP_TEST_DB=1` to force it.
 

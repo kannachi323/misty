@@ -1,0 +1,144 @@
+package app
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+
+	api "github.com/kannachi323/misty/server/internal/app/httpapi"
+	db "github.com/kannachi323/misty/server/internal/platform/postgres"
+
+	"github.com/go-chi/chi/v5"
+	serveragent "github.com/kannachi323/misty/server/internal/agents"
+	appbilling "github.com/kannachi323/misty/server/internal/billing"
+	"github.com/kannachi323/misty/server/internal/platform/email"
+	"github.com/kannachi323/misty/server/internal/platform/metrics"
+	"github.com/kannachi323/misty/server/internal/platform/telemetry"
+)
+
+type Server struct {
+	Router                    *chi.Mux
+	Database                  *db.Database
+	EmailSender               email.Sender
+	AIAgent                   *serveragent.Service
+	LibraryStore              api.LibraryObjectStore
+	Library                   *api.SpaceLibraryService
+	Demo                      *api.DemoService
+	Spaces                    *api.SpacesService
+	Realtime                  *api.RealtimeService
+	PasswordResetStartURL     string
+	PasswordResetRedirectURL  string
+	StripeWebhookPath         string
+	WaitlistNotificationEmail string
+	Telemetry                 telemetry.Client
+	HealthMonitor             *healthMonitor
+	Metrics                   *metrics.Registry
+}
+
+func CreateServer() (*Server, error) {
+	if err := validateProductionEnvironment(); err != nil {
+		return nil, fmt.Errorf("validate production environment: %w", err)
+	}
+	warnOnInsecureBillingConfiguration()
+	passwordResetRedirectURL, err := passwordResetRedirectURLFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	passwordResetStartURL, err := passwordResetStartURLFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	stripeWebhookPath, err := stripeWebhookPathFromEnv()
+	if err != nil {
+		return nil, err
+	}
+
+	s := &Server{
+		Router:                    chi.NewRouter(),
+		Database:                  &db.Database{},
+		PasswordResetStartURL:     passwordResetStartURL,
+		PasswordResetRedirectURL:  passwordResetRedirectURL,
+		StripeWebhookPath:         stripeWebhookPath,
+		WaitlistNotificationEmail: strings.TrimSpace(os.Getenv("WAITLIST_NOTIFY_EMAIL")),
+		Telemetry:                 telemetry.NewFromEnv(),
+	}
+	s.AIAgent = serveragent.NewService(
+		serveragent.NewSessionStoreWithPersistence(0, s.Database),
+		// Every paid model call in the process passes through this ceiling, so
+		// no path can run up an unbounded provider bill.
+		serveragent.NewBudgetedProvider(
+			serveragent.NewAgentProviderFromEnv(),
+			serveragent.ProviderBudgetFromEnv(),
+		),
+		serveragent.WithUsageMeter(appbilling.NewCreditMeter(s.Database)),
+	)
+	s.LibraryStore, err = libraryStoreFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	s.Library, err = api.NewSpaceLibraryService(s.Database, s.LibraryStore, true, api.UploadLimitsFromEnv())
+	if err != nil {
+		return nil, fmt.Errorf("configure Space Library: %w", err)
+	}
+	s.Demo, err = api.NewDemoService(s.Database, s.LibraryStore, api.DemoConfigFromEnv())
+	if err != nil {
+		return nil, fmt.Errorf("configure demo management: %w", err)
+	}
+	mediaProcessingEnabled := false
+	if mediaProcessorBin, lookupErr := exec.LookPath("ffmpeg"); lookupErr == nil {
+		processor, processorErr := api.NewFFmpegLibraryMediaProcessor(mediaProcessorBin)
+		if processorErr != nil {
+			return nil, fmt.Errorf("configure Library media processor: %w", processorErr)
+		}
+		s.Library.SetMediaProcessor(processor)
+		extractor, extractorErr := api.NewFFprobeLibraryMetadataExtractor(mediaProcessorBin)
+		if extractorErr != nil {
+			return nil, fmt.Errorf("configure Library metadata extractor: %w", extractorErr)
+		}
+		s.Library.SetMetadataExtractor(extractor)
+		mediaProcessingEnabled = true
+	}
+	peopleProcessingEnabled := false
+	if endpoint := strings.TrimSpace(os.Getenv("VISION_PROCESSOR_URL")); endpoint != "" {
+		processor, processorErr := api.NewHTTPLibraryPeopleProcessor(endpoint, os.Getenv("VISION_PROCESSOR_TOKEN"))
+		if processorErr != nil {
+			return nil, fmt.Errorf("configure Library People processor: %w", processorErr)
+		}
+		s.Library.SetPeopleProcessor(processor)
+		peopleProcessingEnabled = true
+	}
+	s.Library.SetSubsystems(true, true, mediaProcessingEnabled, peopleProcessingEnabled, mediaProcessingEnabled, true, true, true, true)
+	s.Library.SetNoteAssetsEnabled(true)
+	s.Library.SetDrawingAssetsEnabled(true)
+	spaceKey, err := spaceLinkEncryptionKeyFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	s.Spaces, err = api.NewSpacesService(s.Database, s.AIAgent, spaceKey)
+	if err != nil {
+		return nil, fmt.Errorf("configure Space link encryption: %w", err)
+	}
+	journalCollab, err := api.JournalCollabConfigFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("configure journal collaboration: %w", err)
+	}
+	s.Spaces.SetJournalCollab(journalCollab)
+	s.Spaces.SetLibraryProvider(s.Library)
+	s.Spaces.SetAvatarStore(s.LibraryStore)
+	s.Realtime = api.NewRealtimeService(s.Database, s.Database.GetDSN())
+
+	emailSender, err := email.NewSenderFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	s.EmailSender = emailSender
+	invitationBaseURL := strings.TrimSpace(os.Getenv("MISTY_INVITATION_URL_BASE"))
+	if invitationBaseURL == "" {
+		invitationBaseURL = "https://mistysys.com/invite"
+	}
+	s.Spaces.SetInvitationSender(emailSender, invitationBaseURL)
+	s.HealthMonitor = newHealthMonitor(s)
+
+	return s, nil
+}
