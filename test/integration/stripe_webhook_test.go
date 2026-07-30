@@ -5,13 +5,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
+	"github.com/kannachi323/misty/server/test/testkit"
+
 	"github.com/google/uuid"
-	api "github.com/kannachi323/misty/server/internal/app/httpapi"
+	api "github.com/kannachi323/misty/server/internal/platform/httpapi"
 	db "github.com/kannachi323/misty/server/internal/platform/postgres"
 	stripewebhook "github.com/stripe/stripe-go/v82/webhook"
 )
@@ -169,8 +171,8 @@ func TestMaxSubscriptionLifecycleAndMetadataValidation(t *testing.T) {
 
 func requiredStripeWebhookSecret(t *testing.T) string {
 	t.Helper()
-	loadTestEnv()
-	secret := strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET"))
+	testkit.LoadEnvironment()
+	secret := strings.TrimSpace(envconfig.Getenv("STRIPE_WEBHOOK_SECRET"))
 	if secret == "" {
 		t.Fatal("missing STRIPE_WEBHOOK_SECRET")
 	}

@@ -4,10 +4,11 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
 
 	db "github.com/kannachi323/misty/server/internal/platform/postgres"
 
@@ -22,7 +23,7 @@ func (s *SmartLibraryService) Approve(kind string) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		if strings.EqualFold(strings.TrimSpace(os.Getenv("SMART_LIBRARY_EMERGENCY_DISABLE")), "true") {
+		if strings.EqualFold(strings.TrimSpace(envconfig.Getenv("SMART_LIBRARY_EMERGENCY_DISABLE")), "true") {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "smart_library_disabled", "message": "Image analysis is temporarily disabled. Weekly usage was not charged."})
 			return
 		}

@@ -3,9 +3,10 @@ package app
 import (
 	"context"
 	"log"
-	"os"
 	"strings"
 	"time"
+
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
 
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -22,6 +23,7 @@ func Run() {
 	if err := godotenv.Overload("cloudflare/journal-collab/.secrets/local-dev-server.env"); err == nil {
 		log.Println("Loaded local Journal collaboration development overrides")
 	}
+	runtimeConfig := envconfig.LoadRuntime()
 
 	server, err := CreateServer()
 	if err != nil {
@@ -49,32 +51,30 @@ func Run() {
 	defer server.Realtime.Close()
 	workerContext, stopWorkers := context.WithCancel(context.Background())
 	defer stopWorkers()
-	go runAgentRetention(workerContext, server)
-	go runLibraryPeopleProcessing(workerContext, server)
-	go runLibraryRenditionProcessing(workerContext, server)
-	go runLibraryIntelligenceProcessing(workerContext, server)
-	go runNoteControlProcessing(workerContext, server)
-	go runSubscriptionReconciliation(workerContext, server)
+	startWorkers(
+		workerContext,
+		WorkerFunc(func(ctx context.Context) { runAgentRetention(ctx, server) }),
+		WorkerFunc(func(ctx context.Context) { runLibraryPeopleProcessing(ctx, server) }),
+		WorkerFunc(func(ctx context.Context) { runLibraryRenditionProcessing(ctx, server) }),
+		WorkerFunc(func(ctx context.Context) { runLibraryIntelligenceProcessing(ctx, server) }),
+		WorkerFunc(func(ctx context.Context) { runNoteControlProcessing(ctx, server) }),
+		WorkerFunc(func(ctx context.Context) { runSubscriptionReconciliation(ctx, server) }),
+	)
 	// Domain gauges refresh on their own schedule so a scrape never holds a
 	// database connection.
 	if server.Metrics != nil {
 		server.Metrics.StartSampling(workerContext, 15*time.Second)
 	}
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-
-	log.Printf("Misty server running on :%s", port)
-	if err := runHTTPServer(TestingNewHTTPServer(":"+port, server.Router), stopWorkers); err != nil {
+	log.Printf("Misty server running on :%s", runtimeConfig.Port)
+	if err := runHTTPServer(TestingNewHTTPServer(":"+runtimeConfig.Port, server.Router), stopWorkers); err != nil {
 		panic(err)
 	}
 	log.Println("Misty server stopped")
 }
 
 func runSubscriptionReconciliation(ctx context.Context, server *Server) {
-	if strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")) == "" {
+	if strings.TrimSpace(envconfig.Getenv("STRIPE_SECRET_KEY")) == "" {
 		return
 	}
 	service := appbilling.NewStripeService(

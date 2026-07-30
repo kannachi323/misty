@@ -7,10 +7,11 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
 
 	db "github.com/kannachi323/misty/server/internal/platform/postgres"
 
@@ -108,7 +109,7 @@ func agentMetadata(value db.SmartLibraryReindexAsset) serveragent.SmartLibraryMe
 }
 
 func currentEmbeddingModel() string {
-	if value := strings.TrimSpace(os.Getenv("SMART_LIBRARY_EMBEDDING_MODEL")); value != "" {
+	if value := strings.TrimSpace(envconfig.Getenv("SMART_LIBRARY_EMBEDDING_MODEL")); value != "" {
 		return value
 	}
 	return serveragent.SmartLibraryEmbeddingModel
@@ -145,7 +146,7 @@ func (s *SmartLibraryService) cachedQueryEmbedding(ctx context.Context, userID, 
 	s.queryWindows[userKey] = window
 	s.searchMu.Unlock()
 	dailyLimit := 500
-	if raw := strings.TrimSpace(os.Getenv("SMART_LIBRARY_SEARCH_DAILY_LIMIT")); raw != "" {
+	if raw := strings.TrimSpace(envconfig.Getenv("SMART_LIBRARY_SEARCH_DAILY_LIMIT")); raw != "" {
 		if parsed, parseErr := strconv.Atoi(raw); parseErr == nil && parsed > 0 {
 			dailyLimit = parsed
 		}

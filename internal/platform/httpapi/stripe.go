@@ -4,9 +4,10 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"time"
+
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
 
 	appbilling "github.com/kannachi323/misty/server/internal/billing"
 	db "github.com/kannachi323/misty/server/internal/platform/postgres"
@@ -14,7 +15,7 @@ import (
 )
 
 func StripeWebhook(database *db.Database) http.HandlerFunc {
-	return StripeWebhookWithService(os.Getenv("STRIPE_WEBHOOK_SECRET"), appbilling.NewStripeService(database))
+	return StripeWebhookWithService(envconfig.Getenv("STRIPE_WEBHOOK_SECRET"), appbilling.NewStripeService(database))
 }
 
 // minimumStripeWebhookSecretLength rejects placeholder values. Stripe issues

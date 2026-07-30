@@ -2,11 +2,12 @@ package app
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 
-	api "github.com/kannachi323/misty/server/internal/app/httpapi"
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
+
+	api "github.com/kannachi323/misty/server/internal/platform/httpapi"
 	db "github.com/kannachi323/misty/server/internal/platform/postgres"
 
 	"github.com/go-chi/chi/v5"
@@ -60,7 +61,7 @@ func CreateServer() (*Server, error) {
 		PasswordResetStartURL:     passwordResetStartURL,
 		PasswordResetRedirectURL:  passwordResetRedirectURL,
 		StripeWebhookPath:         stripeWebhookPath,
-		WaitlistNotificationEmail: strings.TrimSpace(os.Getenv("WAITLIST_NOTIFY_EMAIL")),
+		WaitlistNotificationEmail: strings.TrimSpace(envconfig.Getenv("WAITLIST_NOTIFY_EMAIL")),
 		Telemetry:                 telemetry.NewFromEnv(),
 	}
 	s.AIAgent = serveragent.NewService(
@@ -100,8 +101,8 @@ func CreateServer() (*Server, error) {
 		mediaProcessingEnabled = true
 	}
 	peopleProcessingEnabled := false
-	if endpoint := strings.TrimSpace(os.Getenv("VISION_PROCESSOR_URL")); endpoint != "" {
-		processor, processorErr := api.NewHTTPLibraryPeopleProcessor(endpoint, os.Getenv("VISION_PROCESSOR_TOKEN"))
+	if endpoint := strings.TrimSpace(envconfig.Getenv("VISION_PROCESSOR_URL")); endpoint != "" {
+		processor, processorErr := api.NewHTTPLibraryPeopleProcessor(endpoint, envconfig.Getenv("VISION_PROCESSOR_TOKEN"))
 		if processorErr != nil {
 			return nil, fmt.Errorf("configure Library People processor: %w", processorErr)
 		}
@@ -133,7 +134,7 @@ func CreateServer() (*Server, error) {
 		return nil, err
 	}
 	s.EmailSender = emailSender
-	invitationBaseURL := strings.TrimSpace(os.Getenv("MISTY_INVITATION_URL_BASE"))
+	invitationBaseURL := strings.TrimSpace(envconfig.Getenv("MISTY_INVITATION_URL_BASE"))
 	if invitationBaseURL == "" {
 		invitationBaseURL = "https://mistysys.com/invite"
 	}

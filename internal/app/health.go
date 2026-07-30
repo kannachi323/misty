@@ -6,10 +6,11 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
+
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
 )
 
 const healthCacheTTL = 15 * time.Second
@@ -120,15 +121,15 @@ func (monitor *healthMonitor) evaluate(ctx context.Context) (TestingHealthSnapsh
 	checks["discord"] = monitor.discordHealthCheck(ctx, databaseOK)
 
 	overall, status := TestingSummarizeHealth(checks)
-	version := strings.TrimSpace(os.Getenv("MISTY_SERVER_VERSION"))
+	version := strings.TrimSpace(envconfig.Getenv("MISTY_SERVER_VERSION"))
 	if version == "" {
 		version = "development"
 	}
-	environment := strings.TrimSpace(os.Getenv("MISTY_ENVIRONMENT"))
+	environment := strings.TrimSpace(envconfig.Getenv("MISTY_ENVIRONMENT"))
 	if environment == "" {
 		environment = "development"
 	}
-	release := strings.TrimSpace(os.Getenv("MISTY_RELEASE_CHANNEL"))
+	release := strings.TrimSpace(envconfig.Getenv("MISTY_RELEASE_CHANNEL"))
 	if release == "" {
 		release = environment
 	}
@@ -155,7 +156,7 @@ func environmentConfigurationCheck(groups ...string) TestingHealthCheck {
 	for _, group := range groups {
 		configured := false
 		for _, key := range strings.Split(group, "|") {
-			if strings.TrimSpace(os.Getenv(key)) != "" {
+			if strings.TrimSpace(envconfig.Getenv(key)) != "" {
 				configured = true
 				break
 			}
@@ -171,13 +172,13 @@ func environmentConfigurationCheck(groups ...string) TestingHealthCheck {
 
 func TestingPublicAPIConfigurationCheck() TestingHealthCheck {
 	result := TestingHealthCheck{Status: "ready", Mode: "configuration", Critical: false}
-	value := strings.TrimSpace(os.Getenv("MISTY_PUBLIC_API_URL"))
+	value := strings.TrimSpace(envconfig.Getenv("MISTY_PUBLIC_API_URL"))
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
 		result.Status, result.Message = "unconfigured", "configuration incomplete"
 		return result
 	}
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("MISTY_ENVIRONMENT")), "production") && parsed.Scheme != "https" {
+	if strings.EqualFold(strings.TrimSpace(envconfig.Getenv("MISTY_ENVIRONMENT")), "production") && parsed.Scheme != "https" {
 		result.Status, result.Message = "degraded", "production API base must use HTTPS"
 	}
 	return result

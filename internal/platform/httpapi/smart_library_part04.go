@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
 	"strings"
 	"time"
+
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
 
 	db "github.com/kannachi323/misty/server/internal/platform/postgres"
 
@@ -23,7 +24,7 @@ func (s *SmartLibraryService) CompleteReindex() http.HandlerFunc {
 		if !ok {
 			return
 		}
-		if strings.EqualFold(strings.TrimSpace(os.Getenv("SMART_LIBRARY_EMERGENCY_DISABLE")), "true") {
+		if strings.EqualFold(strings.TrimSpace(envconfig.Getenv("SMART_LIBRARY_EMERGENCY_DISABLE")), "true") {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "smart_library_disabled", "message": "Semantic indexing is temporarily disabled. No model call was made."})
 			return
 		}

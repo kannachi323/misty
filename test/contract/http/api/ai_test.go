@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/kannachi323/misty/server/internal/app/httpapi"
+	. "github.com/kannachi323/misty/server/internal/platform/httpapi"
 
 	agent "github.com/kannachi323/misty/server/internal/agents"
 	db "github.com/kannachi323/misty/server/internal/platform/postgres"

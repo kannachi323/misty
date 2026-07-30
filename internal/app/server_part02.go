@@ -3,11 +3,12 @@ package app
 import (
 	"context"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
-	api "github.com/kannachi323/misty/server/internal/app/httpapi"
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
+
+	api "github.com/kannachi323/misty/server/internal/platform/httpapi"
 
 	"github.com/go-chi/cors"
 	serveragent "github.com/kannachi323/misty/server/internal/agents"
@@ -51,8 +52,8 @@ func (s *Server) MountHandlers() error {
 	}
 	aiService := api.NewAIService(s.Database, s.AIAgent)
 	libraryAnalyzer := &serveragent.SmartLibraryAnalyzer{
-		APIKey:  strings.TrimSpace(os.Getenv("AI_GATEWAY_API_KEY")),
-		BaseURL: strings.TrimSpace(os.Getenv("AI_GATEWAY_BASE_URL")),
+		APIKey:  strings.TrimSpace(envconfig.Getenv("AI_GATEWAY_API_KEY")),
+		BaseURL: strings.TrimSpace(envconfig.Getenv("AI_GATEWAY_BASE_URL")),
 	}
 	intelligenceEnabled := libraryAnalyzer.APIKey != ""
 	s.Library.SetIntelligence(libraryAnalyzer, intelligenceEnabled)
@@ -149,7 +150,7 @@ func (s *Server) MountHandlers() error {
 	}
 
 	// Stripe webhook — called by Stripe on payment events
-	s.Router.Post(s.StripeWebhookPath, api.StripeWebhookWithService(os.Getenv("STRIPE_WEBHOOK_SECRET"), appbilling.NewStripeService(s.Database, appbilling.WithTelemetry(s.Telemetry))))
+	s.Router.Post(s.StripeWebhookPath, api.StripeWebhookWithService(envconfig.Getenv("STRIPE_WEBHOOK_SECRET"), appbilling.NewStripeService(s.Database, appbilling.WithTelemetry(s.Telemetry))))
 	s.Spaces.StartProviderWorkers(context.Background())
 
 	return nil

@@ -6,11 +6,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
 )
 
 const (
@@ -154,7 +155,7 @@ func NewGatewayProviderForModelWithReasoning(modelID, reasoningEffort string) (M
 
 func configuredGatewayModels() []GatewayModel {
 	var configured []GatewayModel
-	if json.Unmarshal([]byte(strings.TrimSpace(os.Getenv("MISTY_AI_MODEL_CATALOG_JSON"))), &configured) == nil {
+	if json.Unmarshal([]byte(strings.TrimSpace(envconfig.Getenv("MISTY_AI_MODEL_CATALOG_JSON"))), &configured) == nil {
 		return TestingFilterChatModels(configured)
 	}
 	ids := []string{

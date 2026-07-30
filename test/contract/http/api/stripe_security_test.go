@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/kannachi323/misty/server/internal/app/httpapi"
+	. "github.com/kannachi323/misty/server/internal/platform/httpapi"
 )
 
 // signStripePayload produces the signature header Stripe would send for a

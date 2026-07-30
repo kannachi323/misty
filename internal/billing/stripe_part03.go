@@ -2,9 +2,10 @@ package billing
 
 import (
 	"log"
-	"os"
 	"strings"
 	"time"
+
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
 
 	db "github.com/kannachi323/misty/server/internal/platform/postgres"
 	"github.com/kannachi323/misty/server/internal/platform/telemetry"
@@ -62,7 +63,7 @@ func telemetryInterval(interval string) string {
 func TestingConfiguredSubscriptionPrice(priceID string) (db.Tier, BillingInterval, bool) {
 	var matched *TestingPriceKey
 	for _, definition := range subscriptionPriceDefinitions {
-		if configured := strings.TrimSpace(os.Getenv(definition.env)); configured != "" && configured == strings.TrimSpace(priceID) {
+		if configured := strings.TrimSpace(envconfig.Getenv(definition.env)); configured != "" && configured == strings.TrimSpace(priceID) {
 			if matched != nil {
 				return "", "", false
 			}

@@ -3,9 +3,10 @@ package api
 import (
 	"errors"
 	"net/http"
-	"os"
 	"strings"
 	"unicode/utf8"
+
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
 
 	"github.com/go-chi/chi/v5"
 	serveragent "github.com/kannachi323/misty/server/internal/agents"
@@ -117,7 +118,7 @@ func (s *SmartLibraryService) searchHandler(folderFromPath bool) http.HandlerFun
 		var vector []float64
 		var semanticOperation *hostedSemanticQueryOperation
 		semanticAvailable := false
-		if s.analyzer != nil && strings.TrimSpace(s.analyzer.APIKey) != "" && !strings.EqualFold(strings.TrimSpace(os.Getenv("SMART_LIBRARY_SEARCH_EMERGENCY_DISABLE")), "true") {
+		if s.analyzer != nil && strings.TrimSpace(s.analyzer.APIKey) != "" && !strings.EqualFold(strings.TrimSpace(envconfig.Getenv("SMART_LIBRARY_SEARCH_EMERGENCY_DISABLE")), "true") {
 			var embedErr error
 			vector, semanticOperation, embedErr = s.cachedQueryEmbedding(r.Context(), userID, body.Query)
 			if semanticOperation != nil {

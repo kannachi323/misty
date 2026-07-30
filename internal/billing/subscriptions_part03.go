@@ -2,8 +2,9 @@ package billing
 
 import (
 	"errors"
-	"os"
 	"strings"
+
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
 
 	"github.com/stripe/stripe-go/v82"
 	portalsession "github.com/stripe/stripe-go/v82/billingportal/session"
@@ -19,12 +20,12 @@ func createStripePortalSession(secretKey, customerID, returnURL string) (string,
 }
 
 func TestingLoadStripeCheckoutConfig() (CheckoutConfig, error) {
-	cfg := CheckoutConfig{secretKey: strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")),
-		successURL: strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_SUCCESS_URL")), cancelURL: strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_CANCEL_URL")),
-		portalReturnURL: strings.TrimSpace(os.Getenv("STRIPE_PORTAL_RETURN_URL")),
+	cfg := CheckoutConfig{secretKey: strings.TrimSpace(envconfig.Getenv("STRIPE_SECRET_KEY")),
+		successURL: strings.TrimSpace(envconfig.Getenv("STRIPE_CHECKOUT_SUCCESS_URL")), cancelURL: strings.TrimSpace(envconfig.Getenv("STRIPE_CHECKOUT_CANCEL_URL")),
+		portalReturnURL: strings.TrimSpace(envconfig.Getenv("STRIPE_PORTAL_RETURN_URL")),
 		TestingPrices:   make(map[TestingPriceKey]string, len(subscriptionPriceDefinitions))}
 	for _, definition := range subscriptionPriceDefinitions {
-		cfg.TestingPrices[definition.key] = strings.TrimSpace(os.Getenv(definition.env))
+		cfg.TestingPrices[definition.key] = strings.TrimSpace(envconfig.Getenv(definition.env))
 	}
 	required := []struct{ name, value string }{{"STRIPE_SECRET_KEY", cfg.secretKey}, {"STRIPE_CHECKOUT_SUCCESS_URL", cfg.successURL},
 		{"STRIPE_CHECKOUT_CANCEL_URL", cfg.cancelURL}, {"STRIPE_PORTAL_RETURN_URL", cfg.portalReturnURL}}

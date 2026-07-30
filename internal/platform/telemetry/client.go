@@ -7,10 +7,11 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
+
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
 )
 
 type SubscriptionProperties struct {
@@ -54,10 +55,10 @@ type TestingCapture struct {
 }
 
 func NewFromEnv() Client {
-	environment := normalizedEnvironment(os.Getenv("MISTY_ENVIRONMENT"))
-	releaseChannel := strings.TrimSpace(os.Getenv("MISTY_RELEASE_CHANNEL"))
-	token := strings.TrimSpace(os.Getenv("POSTHOG_PROJECT_TOKEN"))
-	host := strings.TrimRight(strings.TrimSpace(os.Getenv("POSTHOG_HOST")), "/")
+	environment := normalizedEnvironment(envconfig.Getenv("MISTY_ENVIRONMENT"))
+	releaseChannel := strings.TrimSpace(envconfig.Getenv("MISTY_RELEASE_CHANNEL"))
+	token := strings.TrimSpace(envconfig.Getenv("POSTHOG_PROJECT_TOKEN"))
+	host := strings.TrimRight(strings.TrimSpace(envconfig.Getenv("POSTHOG_HOST")), "/")
 	if token == "" || host == "" || (environment != "production" && environment != "staging") || !remoteReleaseChannel(releaseChannel) {
 		return NoopClient{}
 	}
@@ -67,7 +68,7 @@ func NewFromEnv() Client {
 	}
 	client := &TestingPostHogClient{
 		TestingToken: token, TestingHost: host, TestingEnvironment: environment,
-		TestingServerVersion: strings.TrimSpace(os.Getenv("MISTY_SERVER_VERSION")),
+		TestingServerVersion: strings.TrimSpace(envconfig.Getenv("MISTY_SERVER_VERSION")),
 		TestingHttp:          &http.Client{Timeout: 3 * time.Second}, TestingQueue: make(chan TestingCapture, 256), TestingDone: make(chan struct{}),
 	}
 	go client.TestingRun()

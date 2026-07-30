@@ -2,9 +2,10 @@ package billing
 
 import (
 	"errors"
-	"os"
 	"strings"
 	"time"
+
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
 
 	db "github.com/kannachi323/misty/server/internal/platform/postgres"
 	"github.com/stripe/stripe-go/v82"
@@ -82,7 +83,7 @@ func periodEndFromSubscriptionEvent(event *subscriptionEvent) *time.Time {
 }
 
 func fetchSubscriptionFromStripe(subscriptionID string) (*stripe.Subscription, error) {
-	secretKey := strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY"))
+	secretKey := strings.TrimSpace(envconfig.Getenv("STRIPE_SECRET_KEY"))
 	if secretKey == "" {
 		return nil, errors.New("STRIPE_SECRET_KEY is required for subscription reconciliation")
 	}
@@ -94,7 +95,7 @@ func fetchSubscriptionFromStripe(subscriptionID string) (*stripe.Subscription, e
 }
 
 func fetchChargeIDFromStripe(paymentIntentID string) (string, error) {
-	secretKey := strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY"))
+	secretKey := strings.TrimSpace(envconfig.Getenv("STRIPE_SECRET_KEY"))
 	if secretKey == "" || paymentIntentID == "" {
 		return "", nil
 	}

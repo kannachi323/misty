@@ -5,14 +5,16 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
+	"github.com/kannachi323/misty/server/test/testkit"
+
 	"github.com/google/uuid"
-	api "github.com/kannachi323/misty/server/internal/app/httpapi"
 	"github.com/kannachi323/misty/server/internal/billing"
+	api "github.com/kannachi323/misty/server/internal/platform/httpapi"
 	"github.com/kannachi323/misty/server/internal/platform/telemetry"
 )
 
@@ -53,8 +55,8 @@ func TestRegistrationTelemetryRequiresExplicitConsent(t *testing.T) {
 
 func TestStripeTelemetryIsConsentAwareAndDeduplicated(t *testing.T) {
 	database := openIntegrationDatabase(t)
-	loadTestEnv()
-	secret := strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET"))
+	testkit.LoadEnvironment()
+	secret := strings.TrimSpace(envconfig.Getenv("STRIPE_WEBHOOK_SECRET"))
 	if secret == "" {
 		t.Fatal("missing STRIPE_WEBHOOK_SECRET")
 	}

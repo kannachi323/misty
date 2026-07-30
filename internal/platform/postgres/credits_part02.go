@@ -4,9 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"os"
 	"strings"
 	"time"
+
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
 
 	"github.com/google/uuid"
 )
@@ -130,7 +131,7 @@ func (db *Database) SettleHostedAIReservation(reservationID, idempotencyKey stri
 		if _, err := tx.ExecContext(context.Background(), `UPDATE hosted_ai_reservations SET status='settled',settled_at=NOW() WHERE id=$1`, reservationID); err != nil {
 			return err
 		}
-		rateCardVersion := strings.TrimSpace(os.Getenv("MISTY_HOSTED_AI_RATE_CARD_VERSION"))
+		rateCardVersion := strings.TrimSpace(envconfig.Getenv("MISTY_HOSTED_AI_RATE_CARD_VERSION"))
 		if rateCardVersion == "" {
 			rateCardVersion = HostedAIRateCardVersion
 		}

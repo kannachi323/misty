@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"log"
 	"net/url"
-	"os"
 	"strings"
+
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
 )
 
 func TestingPasswordResetRedirectURLFromEnv() (string, error) {
-	rawURL := os.Getenv("PASSWORD_RESET_URL")
+	rawURL := envconfig.Getenv("PASSWORD_RESET_URL")
 	if rawURL == "" {
 		rawURL = "http://localhost:5173/#/reset"
 	}
@@ -32,7 +33,7 @@ func TestingPasswordResetRedirectURLFromEnv() (string, error) {
 }
 
 func TestingPasswordResetStartURLFromEnv() (string, error) {
-	rawURL := os.Getenv("PASSWORD_RESET_START_URL")
+	rawURL := envconfig.Getenv("PASSWORD_RESET_START_URL")
 	if rawURL == "" {
 		rawURL = "http://localhost:8080/auth/reset/start"
 	}
@@ -66,7 +67,7 @@ func TestingIsLocalhostHostname(host string) bool {
 const TestingDefaultStripeWebhookPath = "/stripe/webhook"
 
 func TestingStripeWebhookPathFromEnv() (string, error) {
-	rawPath := strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_PATH"))
+	rawPath := strings.TrimSpace(envconfig.Getenv("STRIPE_WEBHOOK_PATH"))
 	if rawPath == "" {
 		return TestingDefaultStripeWebhookPath, nil
 	}
@@ -92,17 +93,17 @@ func TestingStripeWebhookPathFromEnv() (string, error) {
 // regardless; this exists so the operator learns before real Stripe events are
 // silently rejected too.
 func warnOnInsecureBillingConfiguration() {
-	if len(strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET"))) < 16 {
+	if len(strings.TrimSpace(envconfig.Getenv("STRIPE_WEBHOOK_SECRET"))) < 16 {
 		log.Println("SECURITY: STRIPE_WEBHOOK_SECRET is unset or too short; Stripe webhooks will be refused")
 	}
-	if trustProxyHeadersEnabled() && strings.TrimSpace(os.Getenv("TRUSTED_PROXY_CIDRS")) == "" {
+	if trustProxyHeadersEnabled() && strings.TrimSpace(envconfig.Getenv("TRUSTED_PROXY_CIDRS")) == "" {
 		log.Println("NOTICE: TRUST_PROXY_HEADERS is on and TRUSTED_PROXY_CIDRS is unset; " +
 			"forwarded headers are honoured only from loopback and private ranges")
 	}
 }
 
 func trustProxyHeadersEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("TRUST_PROXY_HEADERS"))) {
+	switch strings.ToLower(strings.TrimSpace(envconfig.Getenv("TRUST_PROXY_HEADERS"))) {
 	case "1", "true", "yes":
 		return true
 	default:

@@ -3,9 +3,10 @@ package app
 import (
 	"fmt"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
+
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
 )
 
 // validateProductionEnvironment rejects configurations that could let the
@@ -13,7 +14,7 @@ import (
 // insecure. Feature-specific constructors perform the deeper key and secret
 // validation after this baseline check.
 func TestingValidateProductionEnvironment() error {
-	if !strings.EqualFold(strings.TrimSpace(os.Getenv("MISTY_ENVIRONMENT")), "production") {
+	if !strings.EqualFold(strings.TrimSpace(envconfig.Getenv("MISTY_ENVIRONMENT")), "production") {
 		return nil
 	}
 
@@ -39,16 +40,16 @@ func TestingValidateProductionEnvironment() error {
 		"STRIPE_PORTAL_RETURN_URL",
 	}
 	for _, name := range required {
-		if strings.TrimSpace(os.Getenv(name)) == "" {
+		if strings.TrimSpace(envconfig.Getenv(name)) == "" {
 			return fmt.Errorf("%s is required in production", name)
 		}
 	}
 
-	publicURL, err := url.Parse(strings.TrimSpace(os.Getenv("MISTY_PUBLIC_API_URL")))
+	publicURL, err := url.Parse(strings.TrimSpace(envconfig.Getenv("MISTY_PUBLIC_API_URL")))
 	if err != nil || publicURL.Scheme != "https" || publicURL.Host == "" {
 		return fmt.Errorf("MISTY_PUBLIC_API_URL must be an absolute https URL in production")
 	}
-	if len(strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET"))) < 16 {
+	if len(strings.TrimSpace(envconfig.Getenv("STRIPE_WEBHOOK_SECRET"))) < 16 {
 		return fmt.Errorf("STRIPE_WEBHOOK_SECRET is too short for production")
 	}
 	for _, name := range []string{
@@ -56,7 +57,7 @@ func TestingValidateProductionEnvironment() error {
 		"STRIPE_CHECKOUT_CANCEL_URL",
 		"STRIPE_PORTAL_RETURN_URL",
 	} {
-		value, parseErr := url.Parse(strings.TrimSpace(os.Getenv(name)))
+		value, parseErr := url.Parse(strings.TrimSpace(envconfig.Getenv(name)))
 		if parseErr != nil || value.Scheme != "https" || value.Host == "" {
 			return fmt.Errorf("%s must be an absolute https URL in production", name)
 		}
@@ -68,14 +69,14 @@ func TestingValidateProductionEnvironment() error {
 		"STRIPE_PRICE_MAX_MONTHLY",
 		"STRIPE_PRICE_MAX_YEARLY",
 	} {
-		priceID := strings.TrimSpace(os.Getenv(name))
+		priceID := strings.TrimSpace(envconfig.Getenv(name))
 		if previous, exists := priceIDs[priceID]; exists {
 			return fmt.Errorf("%s and %s must use different Stripe Price IDs", previous, name)
 		}
 		priceIDs[priceID] = name
 	}
 
-	if rawPort := strings.TrimSpace(os.Getenv("PORT")); rawPort != "" {
+	if rawPort := strings.TrimSpace(envconfig.Getenv("PORT")); rawPort != "" {
 		port, err := strconv.Atoi(rawPort)
 		if err != nil || port < 1 || port > 65535 {
 			return fmt.Errorf("PORT must be an integer between 1 and 65535")

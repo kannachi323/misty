@@ -2,10 +2,11 @@ package api
 
 import (
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
 
 	agent "github.com/kannachi323/misty/server/internal/agents"
 	db "github.com/kannachi323/misty/server/internal/platform/postgres"
@@ -147,7 +148,7 @@ func (s *AIService) SubmitToolResults() http.HandlerFunc {
 }
 
 func agentDocumentsEnabled() bool {
-	return strings.EqualFold(strings.TrimSpace(os.Getenv("MISTY_AGENT_DOCUMENTS_ENABLED")), "true")
+	return strings.EqualFold(strings.TrimSpace(envconfig.Getenv("MISTY_AGENT_DOCUMENTS_ENABLED")), "true")
 }
 
 func messageRequestsDocumentTool(request agent.AgentMessageRequest) bool {

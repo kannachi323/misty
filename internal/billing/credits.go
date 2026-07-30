@@ -4,10 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
-	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
 
 	agent "github.com/kannachi323/misty/server/internal/agents"
 	db "github.com/kannachi323/misty/server/internal/platform/postgres"
@@ -39,7 +40,7 @@ const (
 func ratesForModel(model string) modelRates {
 	model = strings.ToLower(strings.TrimSpace(model))
 	var configured map[string]configuredModelRates
-	if json.Unmarshal([]byte(strings.TrimSpace(os.Getenv("MISTY_HOSTED_AI_MODEL_RATES_JSON"))), &configured) == nil {
+	if json.Unmarshal([]byte(strings.TrimSpace(envconfig.Getenv("MISTY_HOSTED_AI_MODEL_RATES_JSON"))), &configured) == nil {
 		if rates, ok := configured[model]; ok && rates.Input >= 0 && rates.CachedInput >= 0 && rates.Output >= 0 {
 			return modelRates{input: rates.Input, cachedInput: rates.CachedInput, output: rates.Output}
 		}
@@ -215,7 +216,7 @@ func MediaIndexProviderCost(durationMS int64, usage agent.ModelUsage) int64 {
 }
 
 func configurableMicrousd(name string, fallback int64) int64 {
-	value, err := strconv.ParseInt(strings.TrimSpace(os.Getenv(name)), 10, 64)
+	value, err := strconv.ParseInt(strings.TrimSpace(envconfig.Getenv(name)), 10, 64)
 	if err != nil || value < 1 {
 		return fallback
 	}

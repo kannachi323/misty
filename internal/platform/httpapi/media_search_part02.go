@@ -5,10 +5,11 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	envconfig "github.com/kannachi323/misty/server/internal/platform/config"
 
 	db "github.com/kannachi323/misty/server/internal/platform/postgres"
 
@@ -22,7 +23,7 @@ func (s *MediaSearchService) IndexChunk() http.HandlerFunc {
 		if !ok {
 			return
 		}
-		if strings.EqualFold(strings.TrimSpace(os.Getenv("MEDIA_SEARCH_EMERGENCY_DISABLE")), "true") {
+		if strings.EqualFold(strings.TrimSpace(envconfig.Getenv("MEDIA_SEARCH_EMERGENCY_DISABLE")), "true") {
 			writeJSON(w, 503, map[string]any{"code": "media_search_disabled", "message": "Media Search is temporarily disabled. Weekly usage was not charged."})
 			return
 		}

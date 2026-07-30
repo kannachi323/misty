@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"testing"
 
-	api "github.com/kannachi323/misty/server/internal/app/httpapi"
 	"github.com/kannachi323/misty/server/internal/billing"
+	api "github.com/kannachi323/misty/server/internal/platform/httpapi"
 	db "github.com/kannachi323/misty/server/internal/platform/postgres"
 	"github.com/kannachi323/misty/server/internal/platform/security"
 )
