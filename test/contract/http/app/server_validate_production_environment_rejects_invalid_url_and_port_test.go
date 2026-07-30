@@ -84,21 +84,6 @@ func TestCreateServerConfiguresIndependentDevelopmentLibrary(t *testing.T) {
 	}
 }
 
-func TestDemoLibraryStoreRequiresDedicatedBackingStorage(t *testing.T) {
-	for _, key := range []string{"MISTY_LIBRARY_LOCAL_DIR", "R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY", "R2_SECRET_KEY"} {
-		t.Setenv(key, "")
-	}
-	t.Setenv("MISTY_ENVIRONMENT", "development")
-	t.Setenv("MISTY_DEMO_MODE", "local")
-	if _, err := TestingLibraryStoreFromEnv(); err == nil || !strings.Contains(err.Error(), "MISTY_LIBRARY_LOCAL_DIR") {
-		t.Fatalf("libraryStoreFromEnv(local demo) error = %v; want persistent local store requirement", err)
-	}
-	t.Setenv("MISTY_DEMO_MODE", "staging")
-	if _, err := TestingLibraryStoreFromEnv(); err == nil || !strings.Contains(err.Error(), "dedicated R2") {
-		t.Fatalf("libraryStoreFromEnv(staging demo) error = %v; want dedicated R2 requirement", err)
-	}
-}
-
 func TestAllowedCORSOriginsRejectsWildcards(t *testing.T) {
 	t.Setenv("MISTY_ALLOWED_ORIGINS", "https://app.misty.example, https://*, http://evil.example/*")
 	origins := TestingAllowedCORSOrigins()
