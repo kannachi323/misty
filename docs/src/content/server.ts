@@ -158,7 +158,7 @@ export const serverPages: DocPage[] = [
           ),
           note(
             "Temporary hostname",
-            "The trycloudflare.com hostname changes when the tunnel container is recreated. Query it again after restarting the development stack.",
+            "The trycloudflare.com hostname changes when the tunnel container is recreated. The command checks cloudflared’s live connection and waits for Cloudflare DNS directly before printing, avoiding an early failed lookup in the desktop. Restart desktop dev whenever the hostname changes.",
           ),
         ],
       },
