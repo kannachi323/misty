@@ -102,9 +102,10 @@ func addSpaceMembershipTx(ctx context.Context, tx *sql.Tx, spaceID, userID, role
 	}
 	if !entitlements.UnlimitedSpaces {
 		var memberships int
-		// Every existing membership counts. Invitations are intentionally not
-		// queried, and lifecycle/ownership/role are intentionally not filtered.
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM space_members WHERE user_id=$1`, userID).Scan(&memberships); err != nil {
+		// The permanent Misty Space is product infrastructure, not one of the
+		// user's plan-limited collaborative Spaces.
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM space_members m
+			JOIN spaces s ON s.id=m.space_id WHERE m.user_id=$1 AND s.kind='standard'`, userID).Scan(&memberships); err != nil {
 			return err
 		}
 		if memberships >= entitlements.SpaceLimit {

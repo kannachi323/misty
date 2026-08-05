@@ -31,6 +31,12 @@ func Run() {
 		panic(err)
 	}
 	defer server.Database.Stop()
+	if err := server.Database.BootstrapMistySpace(
+		context.Background(),
+		strings.TrimSpace(envconfig.Getenv("MISTY_OPERATOR_USER_ID")),
+	); err != nil {
+		panic("Misty Space bootstrap failed: " + err.Error())
+	}
 
 	if err := server.MountHandlers(); err != nil {
 		panic(err)
@@ -44,6 +50,7 @@ func Run() {
 	startWorkers(
 		workerContext,
 		WorkerFunc(func(ctx context.Context) { runAgentRetention(ctx, server) }),
+		WorkerFunc(func(ctx context.Context) { runPersonalAgentTaskProcessing(ctx, server) }),
 		WorkerFunc(func(ctx context.Context) { runLibraryPeopleProcessing(ctx, server) }),
 		WorkerFunc(func(ctx context.Context) { runLibraryRenditionProcessing(ctx, server) }),
 		WorkerFunc(func(ctx context.Context) { runLibraryIntelligenceProcessing(ctx, server) }),
@@ -61,6 +68,25 @@ func Run() {
 		panic(err)
 	}
 	log.Println("Misty server stopped")
+}
+
+func runPersonalAgentTaskProcessing(ctx context.Context, server *Server) {
+	if server.Spaces == nil {
+		return
+	}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	workerID := "personal-agent-task-worker-" + uuid.NewString()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := server.Spaces.ProcessAssignedPersonalAgentRuns(ctx, workerID, 2); err != nil {
+				log.Printf("Personal Agent Task processing failed: %v", err)
+			}
+		}
+	}
 }
 
 func runSubscriptionReconciliation(ctx context.Context, server *Server) {

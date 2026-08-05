@@ -218,7 +218,7 @@ func TestingRequestSizeBytes(request ModelRequest) int {
 		characters += len(path)
 	}
 	for _, tool := range request.Capabilities.Tools {
-		characters += len(tool.Name) + len(tool.Risk)
+		characters += len(tool.Name) + len(tool.Description) + len(tool.Risk) + len(tool.InputSchema)
 	}
 	return characters
 }

@@ -50,6 +50,10 @@ func (s *Server) MountHandlers() error {
 	if err != nil {
 		return err
 	}
+	authHandoffService, err := api.NewAuthHandoffService(s.Database, s.AuthHandoffStartURL, s.WebsiteURL)
+	if err != nil {
+		return err
+	}
 	aiService := api.NewAIService(s.Database, s.AIAgent)
 	libraryAnalyzer := &serveragent.SmartLibraryAnalyzer{
 		APIKey:  strings.TrimSpace(envconfig.Getenv("AI_GATEWAY_API_KEY")),
@@ -60,6 +64,7 @@ func (s *Server) MountHandlers() error {
 	smartLibraryService := api.NewSmartLibraryService(s.Database, libraryAnalyzer)
 	mediaSearchService := api.NewMediaSearchService(s.Database, libraryAnalyzer)
 	agentsService := api.NewAgentsService(s.Database)
+	agentsService.SetAvatarStore(s.LibraryStore)
 	registerHandler := api.RegisterWithTelemetry(s.Database, s.Telemetry)
 	loginHandler := api.Login(s.Database)
 	logoutHandler := api.Logout(s.Database)
@@ -67,6 +72,8 @@ func (s *Server) MountHandlers() error {
 	startResetHandler := passwordResetService.Start()
 	validateResetTokenHandler := passwordResetService.Validate()
 	resetPasswordHandler := passwordResetService.Reset()
+	mintHandoffHandler := authHandoffService.Mint()
+	startHandoffHandler := authHandoffService.Start()
 	waitlistJoinHandler := waitlistService.Join()
 	healthHandler := s.HealthMonitor.Handler()
 	s.Router.Get("/health", healthHandler)
@@ -85,6 +92,8 @@ func (s *Server) MountHandlers() error {
 	s.Router.Get("/auth/reset/start", startResetHandler)
 	s.Router.Get("/auth/reset/validate", validateResetTokenHandler)
 	s.Router.Post("/auth/reset", resetPasswordHandler)
+	s.Router.Post("/auth/handoff", mintHandoffHandler)
+	s.Router.Get("/auth/handoff/start", startHandoffHandler)
 	s.Router.Post("/waitlist", waitlistJoinHandler)
 
 	// Dashboard — authenticated endpoints
@@ -121,9 +130,14 @@ func (s *Server) MountHandlers() error {
 	s.Router.Get("/api/auth/reset/start", startResetHandler)
 	s.Router.Get("/api/auth/reset/validate", validateResetTokenHandler)
 	s.Router.Post("/api/auth/reset", resetPasswordHandler)
+	s.Router.Post("/api/auth/handoff", mintHandoffHandler)
+	s.Router.Get("/api/auth/handoff/start", startHandoffHandler)
 	s.Router.Post("/api/waitlist", waitlistJoinHandler)
 	s.Router.Get("/api/me", api.GetMe(s.Database))
 	s.Router.Put("/api/me/profile", api.UpdateProfile(s.Database))
+	s.Router.Post("/api/me/export", s.Spaces.AccountExportManifest())
+	s.Router.Post("/api/me/deletion", s.Spaces.BeginAccountDeletion())
+	s.Router.Post("/api/account/deletion/status", s.Spaces.AccountDeletionStatus())
 	s.Router.MethodFunc(http.MethodGet, "/api/me/avatar", api.UserAvatar(s.Database, s.LibraryStore))
 	s.Router.MethodFunc(http.MethodPut, "/api/me/avatar", api.UserAvatar(s.Database, s.LibraryStore))
 	s.Router.Put("/api/me/device", api.UpdateDevice(s.Database))

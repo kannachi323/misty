@@ -56,8 +56,10 @@ const (
 type AgentMessageRequest struct {
 	Mode          string       `json:"mode"`
 	UserMessage   string       `json:"user_message"`
+	PlanOnly      bool         `json:"plan_only,omitempty"`
 	ActiveRoot    string       `json:"active_root,omitempty"`
 	SelectedPaths []string     `json:"selected_paths,omitempty"`
+	ToolScope     string       `json:"tool_scope,omitempty"`
 	Capabilities  ToolManifest `json:"capabilities"`
 
 	// SpaceID is accepted only so the decoder, which rejects unknown fields,
@@ -72,6 +74,11 @@ type AgentMessageRequest struct {
 	// between surfaces does not start a new conversation.
 	SpaceSection string `json:"space_section,omitempty"`
 
+	// ContextTaskID is a client hint identifying the Task currently open in the
+	// dock. The API resolves it inside the session-bound Space and rechecks the
+	// member's Task permission before adding any Task detail to the prompt.
+	ContextTaskID string `json:"context_task_id,omitempty"`
+
 	// SpaceCard, SpaceRecords and SpaceContextRevision are assembled server-side
 	// per turn and are never accepted from the client; json:"-" keeps the decoder
 	// from populating them. Empty SpaceRecords means "reuse what the session
@@ -84,6 +91,7 @@ type AgentMessageRequest struct {
 // SpaceSections are the surfaces a member can be working in when they talk to an
 // agent. Mirrors validSpaceSections in the client's features/spaces/index.tsx.
 var SpaceSections = map[string]bool{
+	"agents":   true,
 	"chat":     true,
 	"tasks":    true,
 	"notes":    true,
@@ -98,6 +106,7 @@ type ToolManifest struct {
 
 type ToolDefinition struct {
 	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
 	Risk        string          `json:"risk"`
 	InputSchema json.RawMessage `json:"input_schema,omitempty"`
 }

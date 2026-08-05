@@ -85,6 +85,8 @@ func NewAPIRateLimiter() *APIRateLimiter {
 			"GET /auth/reset/start":                                     {Limit: 20, Window: time.Minute},
 			"GET /auth/reset/validate":                                  {Limit: 20, Window: time.Minute},
 			"POST /auth/reset":                                          {Limit: 10, Window: time.Minute},
+			"POST /auth/handoff":                                        {Limit: 20, Window: time.Minute},
+			"GET /auth/handoff/start":                                   {Limit: 20, Window: time.Minute},
 			"POST /me/export":                                           {Limit: 3, Window: time.Hour},
 			"POST /me/deletion":                                         {Limit: 3, Window: time.Hour},
 			"POST /account/deletion/status":                             {Limit: 20, Window: time.Minute},

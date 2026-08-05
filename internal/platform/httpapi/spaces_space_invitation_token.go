@@ -133,6 +133,14 @@ func (s *SpacesService) Messages() http.HandlerFunc {
 			return
 		}
 		spaceID := chi.URLParam(r, "spaceID")
+		if r.Method == http.MethodDelete {
+			if err := s.database.ClearEveryoneConversation(r.Context(), userID, spaceID); err != nil {
+				writeSpaceError(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if r.Method == http.MethodGet {
 			before, _ := strconv.ParseInt(r.URL.Query().Get("before"), 10, 64)
 			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
@@ -162,7 +170,7 @@ func (s *SpacesService) Messages() http.HandlerFunc {
 		agentReplies := make([]*db.SpaceMessage, 0, len(agentIDs))
 		agentFailures := make([]agentMentionFailure, 0)
 		for _, agentID := range uniqueStrings(agentIDs) {
-			reply, runErr := s.runMentionedAgent(r.Context(), userID, spaceID, "", agentID, message.ID, body.Content, body.FileNodeIDs)
+			reply, runErr := s.runMentionedAgent(r.Context(), userID, spaceID, "", agentID, message.ID, body.Content, body.FileNodeIDs, body.AttachmentIDs, body.LibraryItemIDs)
 			if runErr != nil {
 				agentFailures = append(agentFailures, TestingAgentMentionFailureFromError(agentID, runErr))
 			} else if reply != nil {

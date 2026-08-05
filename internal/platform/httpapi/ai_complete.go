@@ -1,7 +1,12 @@
 package api
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -53,10 +58,6 @@ func (s *AIService) SendMessage() http.HandlerFunc {
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
 		}
-		if messageRequestsDocumentTool(body) && !agentDocumentsEnabled() {
-			writeJSON(w, http.StatusNotFound, map[string]string{"code": "document_agents_disabled"})
-			return
-		}
 		bound, err := s.database.ValidateAgentSessionAccess(r.Context(), userID, sessionID)
 		if err != nil {
 			writeAISessionAccessError(w, err)
@@ -68,6 +69,18 @@ func (s *AIService) SendMessage() http.HandlerFunc {
 			writeSpaceError(w, err)
 			return
 		}
+		// Every manifest is server-owned. Space and personal Agent paths resolve
+		// their own Toolbox below; ordinary Files conversations receive only the
+		// device actions allowed by the explicit per-turn scope.
+		body.Capabilities = agent.ToolManifest{Tools: []agent.ToolDefinition{}}
+		if bound.SpaceID == "" && bound.AgentID == "" {
+			manifest, manifestErr := resolveDeviceAgentToolbox(r.Context(), body)
+			if manifestErr != nil {
+				TestingWriteAIError(w, manifestErr)
+				return
+			}
+			body.Capabilities = manifest
+		}
 		release, ok := s.acquireProviderCall(w, userID)
 		if !ok {
 			return
@@ -76,6 +89,22 @@ func (s *AIService) SendMessage() http.HandlerFunc {
 		tier, err := s.agentTierForUser(userID)
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if bound.SpaceID != "" {
+			if err := s.runSpaceAgentDirectMessage(r.Context(), userID, sessionID, bound, body, tier); err != nil {
+				TestingWriteAIError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+			return
+		}
+		if bound.AgentID != "" {
+			if err := s.runGlobalAgentDirectMessage(r.Context(), userID, sessionID, bound, body, tier); err != nil {
+				TestingWriteAIError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 			return
 		}
 		if err := s.runtime.SendMessageWithTierContext(r.Context(), sessionID, userID, body, tier); err != nil {
@@ -125,7 +154,8 @@ func (s *AIService) SubmitToolResults() http.HandlerFunc {
 			writeJSON(w, http.StatusNotFound, map[string]string{"code": "document_agents_disabled"})
 			return
 		}
-		if _, err := s.database.ValidateAgentSessionAccess(r.Context(), userID, sessionID); err != nil {
+		bound, err := s.database.ValidateAgentSessionAccess(r.Context(), userID, sessionID)
+		if err != nil {
 			writeAISessionAccessError(w, err)
 			return
 		}
@@ -139,7 +169,15 @@ func (s *AIService) SubmitToolResults() http.HandlerFunc {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		if err := s.runtime.SubmitToolResultsWithTierContext(r.Context(), sessionID, userID, body.Results, tier); err != nil {
+		submit := func() error {
+			return s.runtime.SubmitToolResultsWithTierContext(r.Context(), sessionID, userID, body.Results, tier)
+		}
+		if bound.SpaceID == "" && bound.AgentID == "" && toolResultsContainWrite(body.Results) {
+			err = s.journalDeviceToolResults(r.Context(), userID, sessionID, body.Results, submit)
+		} else {
+			err = submit()
+		}
+		if err != nil {
 			TestingWriteAIError(w, err)
 			return
 		}
@@ -147,17 +185,42 @@ func (s *AIService) SubmitToolResults() http.HandlerFunc {
 	}
 }
 
-func agentDocumentsEnabled() bool {
-	return strings.EqualFold(strings.TrimSpace(envconfig.Getenv("MISTY_AGENT_DOCUMENTS_ENABLED")), "true")
+func (s *AIService) journalDeviceToolResults(ctx context.Context, userID, sessionID string, results []agent.ToolResult, submit func() error) error {
+	requestIDs := make([]string, 0, len(results))
+	writeResults := make([]map[string]any, 0, len(results))
+	for _, result := range results {
+		requestIDs = append(requestIDs, strings.TrimSpace(result.RequestID))
+		if result.Name == agent.ToolApplyFilePlan {
+			writeResults = append(writeResults, map[string]any{"request_id": result.RequestID, "name": result.Name, "ok": result.OK})
+		}
+	}
+	sort.Strings(requestIDs)
+	digest := sha256.Sum256([]byte(strings.Join([]string{userID, sessionID, strings.Join(requestIDs, "\x00")}, "\x00")))
+	request, _ := json.Marshal(map[string]any{"results": writeResults})
+	_, err := s.database.JournalAgentToolboxAction(ctx, db.AgentToolboxAction{
+		IdempotencyKey: "device-tool-results:" + hex.EncodeToString(digest[:]),
+		UserID:         userID, SessionID: sessionID, ToolName: agent.ToolApplyFilePlan,
+		AuditEvent: "device.file_plan.result_submitted", Risk: agent.RiskWrite, Source: "device_agent", Request: request,
+	}, func() (json.RawMessage, error) {
+		if submitErr := submit(); submitErr != nil {
+			return nil, submitErr
+		}
+		return json.RawMessage(`{"status":"accepted"}`), nil
+	})
+	return err
 }
 
-func messageRequestsDocumentTool(request agent.AgentMessageRequest) bool {
-	for _, tool := range request.Capabilities.Tools {
-		if tool.Name == agent.ToolPreviewFile {
+func toolResultsContainWrite(results []agent.ToolResult) bool {
+	for _, result := range results {
+		if result.Name == agent.ToolApplyFilePlan {
 			return true
 		}
 	}
 	return false
+}
+
+func agentDocumentsEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(envconfig.Getenv("MISTY_AGENT_DOCUMENTS_ENABLED")), "true")
 }
 
 func toolResultsContainDocuments(results []agent.ToolResult) bool {

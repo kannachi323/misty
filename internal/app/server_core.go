@@ -29,6 +29,8 @@ type Server struct {
 	Realtime                  *api.RealtimeService
 	PasswordResetStartURL     string
 	PasswordResetRedirectURL  string
+	AuthHandoffStartURL       string
+	WebsiteURL                string
 	StripeWebhookPath         string
 	WaitlistNotificationEmail string
 	Telemetry                 telemetry.Client
@@ -53,12 +55,22 @@ func CreateServer() (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	authHandoffStartURL, err := TestingAuthHandoffStartURLFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	websiteURL, err := TestingWebsiteURLFromEnv()
+	if err != nil {
+		return nil, err
+	}
 
 	s := &Server{
 		Router:                    chi.NewRouter(),
 		Database:                  &db.Database{},
 		PasswordResetStartURL:     passwordResetStartURL,
 		PasswordResetRedirectURL:  passwordResetRedirectURL,
+		AuthHandoffStartURL:       authHandoffStartURL,
+		WebsiteURL:                websiteURL,
 		StripeWebhookPath:         stripeWebhookPath,
 		WaitlistNotificationEmail: strings.TrimSpace(envconfig.Getenv("WAITLIST_NOTIFY_EMAIL")),
 		Telemetry:                 telemetry.NewFromEnv(),
