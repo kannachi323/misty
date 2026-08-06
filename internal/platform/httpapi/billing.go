@@ -27,8 +27,7 @@ func CreateCheckoutSession(database *db.Database) http.HandlerFunc {
 			Tier     db.Tier                    `json:"tier"`
 			Interval appbilling.BillingInterval `json:"interval"`
 		}
-		if err := decodeJSON(w, r, &body); err != nil {
-			http.Error(w, "invalid request", http.StatusBadRequest)
+		if decodeJSON(w, r, &body) != nil {
 			return
 		}
 

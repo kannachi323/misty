@@ -31,13 +31,6 @@ func Run() {
 		panic(err)
 	}
 	defer server.Database.Stop()
-	if err := server.Database.BootstrapMistySpace(
-		context.Background(),
-		strings.TrimSpace(envconfig.Getenv("MISTY_OPERATOR_USER_ID")),
-	); err != nil {
-		panic("Misty Space bootstrap failed: " + err.Error())
-	}
-
 	if err := server.MountHandlers(); err != nil {
 		panic(err)
 	}
@@ -55,6 +48,7 @@ func Run() {
 		WorkerFunc(func(ctx context.Context) { runLibraryRenditionProcessing(ctx, server) }),
 		WorkerFunc(func(ctx context.Context) { runLibraryIntelligenceProcessing(ctx, server) }),
 		WorkerFunc(func(ctx context.Context) { runNoteControlProcessing(ctx, server) }),
+		WorkerFunc(func(ctx context.Context) { runActionSuggestionProcessing(ctx, server) }),
 		WorkerFunc(func(ctx context.Context) { runSubscriptionReconciliation(ctx, server) }),
 	)
 	// Domain gauges refresh on their own schedule so a scrape never holds a
@@ -68,6 +62,27 @@ func Run() {
 		panic(err)
 	}
 	log.Println("Misty server stopped")
+}
+
+func runActionSuggestionProcessing(ctx context.Context, server *Server) {
+	if server.Spaces == nil {
+		return
+	}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := server.Spaces.ProcessActionSuggestionJobs(ctx, 4); err != nil {
+				log.Printf("Action suggestion processing failed: %v", err)
+			}
+			if _, err := server.Spaces.ProcessConversationFollowUps(ctx, 10); err != nil {
+				log.Printf("Conversation follow-up processing failed: %v", err)
+			}
+		}
+	}
 }
 
 func runPersonalAgentTaskProcessing(ctx context.Context, server *Server) {
@@ -273,9 +288,6 @@ func runAgentRetention(ctx context.Context, server *Server) {
 							report.InterruptedFinalizations,
 						)
 					}
-				}
-				if _, err := server.Database.PurgeExpiredAgentConversations(ctx); err != nil {
-					log.Printf("Agent conversation purge failed: %v", err)
 				}
 				if _, err := server.Database.PurgeExpiredSpaceData(ctx); err != nil {
 					log.Printf("Space retention purge failed: %v", err)

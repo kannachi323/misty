@@ -76,7 +76,9 @@ func CreateServer() (*Server, error) {
 		Telemetry:                 telemetry.NewFromEnv(),
 	}
 	s.AIAgent = serveragent.NewService(
-		serveragent.NewSessionStoreWithPersistence(0, s.Database),
+		// Agent execution state is attached to durable Space runs. The generic
+		// completion service must never recreate the retired private chat store.
+		serveragent.NewSessionStoreWithPersistence(0, nil),
 		// Every paid model call in the process passes through this ceiling, so
 		// no path can run up an unbounded provider bill.
 		serveragent.NewBudgetedProvider(

@@ -167,17 +167,15 @@ func (s *SpacesService) Messages() http.HandlerFunc {
 			writeSpaceError(w, err)
 			return
 		}
-		agentReplies := make([]*db.SpaceMessage, 0, len(agentIDs))
-		agentFailures := make([]agentMentionFailure, 0)
-		for _, agentID := range uniqueStrings(agentIDs) {
-			reply, runErr := s.runMentionedAgent(r.Context(), userID, spaceID, "", agentID, message.ID, body.Content, body.FileNodeIDs, body.AttachmentIDs, body.LibraryItemIDs)
-			if runErr != nil {
-				agentFailures = append(agentFailures, TestingAgentMentionFailureFromError(agentID, runErr))
-			} else if reply != nil {
-				agentReplies = append(agentReplies, reply)
-			}
+		triggers, err := s.enqueueSpaceAgentMessageTriggers(r.Context(), userID, spaceID, "", message.ID, "mention", agentIDs, body.Content, body.FileNodeIDs, body.AttachmentIDs, body.LibraryItemIDs)
+		if err != nil {
+			writeSpaceError(w, err)
+			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]any{"message": message, "agent_replies": agentReplies, "agent_failures": agentFailures})
+		if len(agentIDs) == 0 {
+			_ = s.database.QueueSpaceActionSuggestionAnalysis(r.Context(), userID, spaceID, "", message.ID)
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"message": message, "triggered_runs": triggers})
 	}
 }
 

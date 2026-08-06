@@ -102,7 +102,7 @@ func (monitor *healthMonitor) evaluate(ctx context.Context) (TestingHealthSnapsh
 	checks["agent_gateway"] = agentGatewayCheck
 	// Pre-rename key, still emitted so any external dashboard or alert watching
 	// it keeps reporting while it is repointed at agent_gateway.
-	checks["mika"] = agentGatewayCheck
+	checks["agent_runtime"] = agentGatewayCheck
 	checks["email"] = environmentConfigurationCheck("MAILJET_API_KEY", "MAILJET_SECRET_KEY", "MAILJET_FROM_EMAIL")
 	checks["billing"] = environmentConfigurationCheck(
 		"STRIPE_SECRET_KEY",

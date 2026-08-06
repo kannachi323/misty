@@ -96,11 +96,6 @@ func NewAPIRateLimiter() *APIRateLimiter {
 			"POST /billing/portal-session":                              {Limit: 20, Window: time.Minute},
 			"POST /stripe/webhook":                                      {Limit: 120, Window: time.Minute},
 			"POST /ai/complete":                                         {Limit: 12, Window: time.Minute},
-			"POST /ai/sessions":                                         {Limit: 20, Window: time.Hour},
-			"POST /ai/sessions/{sessionID}/messages":                    {Limit: 12, Window: time.Minute},
-			"POST /ai/sessions/{sessionID}/tool-results":                {Limit: 30, Window: time.Minute},
-			"GET /ai/sessions/{sessionID}/events":                       {Limit: 120, Window: time.Minute},
-			"POST /ai/sessions/{sessionID}/cancel":                      {Limit: 30, Window: time.Minute},
 			"POST /ai/media-search/chunks":                              {Limit: 60, Window: time.Minute},
 			"POST /ai/media-search/search":                              {Limit: 60, Window: time.Minute},
 			"POST /spaces/{spaceID}/library/reauthenticate":             {Limit: 5, Window: time.Minute},
@@ -128,7 +123,6 @@ func NewAPIRateLimiter() *APIRateLimiter {
 			"GET /spaces/{spaceID}/integrations/notion/search":               {Limit: 20, Window: time.Minute},
 			"POST /spaces/{spaceID}/integrations/notion/pages":               {Limit: 20, Window: time.Minute},
 			"POST /spaces/{spaceID}/calendar/sync":                           {Limit: 6, Window: time.Minute},
-			"POST /spaces/{spaceID}/tasks/calendar":                          {Limit: 20, Window: time.Minute},
 
 			// OAuth start is cheap for us but creates state rows and drives users
 			// at a third-party consent screen.
