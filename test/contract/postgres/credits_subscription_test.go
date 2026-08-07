@@ -105,6 +105,62 @@ func TestHostedAILimitAndRetiredPurchases(t *testing.T) {
 	}
 }
 
+func TestHostedAIAgentReservationCanUseRemainingAllowance(t *testing.T) {
+	database := openTestDatabase(t)
+	user, err := database.CreateUser("Remaining Usage", "remaining-usage@example.com", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	reservation, wallet, err := database.ReserveHostedAIUsageUpTo(
+		user.ID, TierBasic, HostedAIMeterAgent, "agent-worst-case", BasicWeeklyAgentAllowance+1, now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reservation.ReservedMicrousd != BasicWeeklyAgentAllowance || wallet.Available() != 0 {
+		t.Fatalf("partial reservation = %#v, wallet = %#v", reservation, wallet)
+	}
+	if _, _, err := database.ReserveHostedAIUsageUpTo(user.ID, TierBasic, HostedAIMeterAgent, "concurrent-agent", 1, now); err == nil {
+		t.Fatal("concurrent agent reserved usage already held by the first agent")
+	}
+
+	wallet, err = database.SettleHostedAIReservation(reservation.ID, "agent-worst-case:settle", HostedAIUsage{ChargeMicrousd: 10_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wallet.WeeklyRemainingMicrousd != BasicWeeklyAgentAllowance-10_000 || wallet.ReservedMicrousd != 0 {
+		t.Fatalf("settled partial reservation = %#v", wallet)
+	}
+}
+
+func TestHostedAIInternalFailureRefundIsIdempotent(t *testing.T) {
+	database := openTestDatabase(t)
+	user, err := database.CreateUser("Refunded Agent User", "refunded-agent@example.com", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	reservation, _, err := database.ReserveHostedAIUsage(user.ID, TierBasic, HostedAIMeterAgent, "rejected-agent-call", 20_000, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = database.SettleHostedAIReservation(reservation.ID, "rejected-agent-call:settle", HostedAIUsage{Provider: "test", Model: "test", ChargeMicrousd: 7_000}); err != nil {
+		t.Fatal(err)
+	}
+	wallet, err := database.RefundHostedAIReservation(reservation.ID, "rejected-agent-call:refund", "capability_envelope_rejected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wallet.WeeklyRemainingMicrousd != FreeWeeklyHostedAIAllowance {
+		t.Fatalf("refunded wallet = %#v", wallet)
+	}
+	replayed, err := database.RefundHostedAIReservation(reservation.ID, "rejected-agent-call:refund", "capability_envelope_rejected")
+	if err != nil || replayed.WeeklyRemainingMicrousd != FreeWeeklyHostedAIAllowance {
+		t.Fatalf("idempotent refund = %#v, err = %v", replayed, err)
+	}
+}
+
 func TestAgentUsageDowngradePausesWithoutResettingConsumedUsage(t *testing.T) {
 	database := openTestDatabase(t)
 	user, err := database.CreateUser("Usage Downgrade", "usage-downgrade@example.com", "password123")

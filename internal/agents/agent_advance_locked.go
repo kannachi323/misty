@@ -113,6 +113,11 @@ func (s *Service) advanceLocked(ctx context.Context, session *Session) error {
 			requests = filtered
 		}
 		if rejected > 0 {
+			if reservation != nil && settlement.ChargedMicrousd > 0 {
+				if _, refundErr := s.meter.Refund(reservation, idempotencyKey+":capability-refund", "capability_envelope_rejected"); refundErr != nil {
+					log.Printf("could not refund rejected agent capability call: %v", refundErr)
+				}
+			}
 			session.appendEvent(AgentEvent{Type: EventError, Message: "The agent requested a tool outside the allowed capability envelope."})
 		}
 		requests = s.policy.Apply(session.Mode, requests)

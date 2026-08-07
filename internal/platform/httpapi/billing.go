@@ -99,6 +99,7 @@ func CreatePortalSession(database *db.Database) http.HandlerFunc {
 
 func GetBillingUsage(database *db.Database) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
 		userID, err := sessionUserID(r, database)
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)

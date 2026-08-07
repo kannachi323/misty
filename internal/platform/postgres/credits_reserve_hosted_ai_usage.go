@@ -13,6 +13,19 @@ import (
 )
 
 func (db *Database) ReserveHostedAIUsage(userID string, tier Tier, meter, idempotencyKey string, amount int64, now time.Time) (*HostedAIReservation, *HostedAIWallet, error) {
+	return db.reserveHostedAIUsage(userID, tier, meter, idempotencyKey, amount, now, false)
+}
+
+// ReserveHostedAIUsageUpTo reserves the requested amount when possible and the
+// entire remaining allowance otherwise. Agent completions use this because
+// their reservation is a worst-case output estimate rather than a fixed-cost
+// operation. Settling still charges actual usage, while reserving everything
+// left prevents concurrent completions from overspending the account.
+func (db *Database) ReserveHostedAIUsageUpTo(userID string, tier Tier, meter, idempotencyKey string, amount int64, now time.Time) (*HostedAIReservation, *HostedAIWallet, error) {
+	return db.reserveHostedAIUsage(userID, tier, meter, idempotencyKey, amount, now, true)
+}
+
+func (db *Database) reserveHostedAIUsage(userID string, tier Tier, meter, idempotencyKey string, amount int64, now time.Time, allowPartial bool) (*HostedAIReservation, *HostedAIWallet, error) {
 	if amount <= 0 || strings.TrimSpace(idempotencyKey) == "" {
 		return nil, nil, errors.New("invalid hosted AI reservation")
 	}
@@ -32,42 +45,56 @@ func (db *Database) ReserveHostedAIUsage(userID string, tier Tier, meter, idempo
 		existingErr := tx.QueryRowContext(context.Background(), `SELECT id,user_id,meter,reserved_microusd,status FROM hosted_ai_reservations WHERE idempotency_key=$1 FOR UPDATE`, idempotencyKey).
 			Scan(&existingID, &existingUserID, &existingMeter, &existingAmount, &existingStatus)
 		if existingErr == nil {
-			if existingUserID != userID || existingMeter != meter || existingAmount != amount {
+			amountMatches := existingAmount == amount || (allowPartial && existingAmount < amount)
+			if existingUserID != userID || existingMeter != meter || !amountMatches {
 				return errors.New("hosted AI idempotency key reused with different reservation parameters")
 			}
 			reservation.ID, reservation.Status = existingID, existingStatus
+			reservation.ReservedMicrousd, reservation.ReservedCredits = existingAmount, existingAmount
 			if existingStatus != "released" {
 				return nil
 			}
-			if wallet.Available() < amount {
-				return HostedAILimitReachedError{Available: wallet.Available(), Required: amount}
+			reserveAmount := amount
+			if wallet.Available() < reserveAmount {
+				if allowPartial && wallet.Available() > 0 {
+					reserveAmount = wallet.Available()
+				} else {
+					return HostedAILimitReachedError{Available: wallet.Available(), Required: amount}
+				}
 			}
-			if _, err := tx.ExecContext(context.Background(), `UPDATE hosted_ai_reservations SET status='reserved',created_at=NOW(),settled_at=NULL WHERE id=$1`, existingID); err != nil {
+			if _, err := tx.ExecContext(context.Background(), `UPDATE hosted_ai_reservations SET reserved_microusd=$2,status='reserved',created_at=NOW(),settled_at=NULL WHERE id=$1`, existingID, reserveAmount); err != nil {
 				return err
 			}
 			reservation.Status = "reserved"
+			reservation.ReservedMicrousd, reservation.ReservedCredits = reserveAmount, reserveAmount
 			reservedNow = true
-			_, err := tx.ExecContext(context.Background(), `UPDATE hosted_ai_wallets SET reserved_microusd=reserved_microusd+$2,updated_at=NOW() WHERE user_id=$1`, userID, amount)
+			_, err := tx.ExecContext(context.Background(), `UPDATE hosted_ai_wallets SET reserved_microusd=reserved_microusd+$2,updated_at=NOW() WHERE user_id=$1`, userID, reserveAmount)
 			return err
 		}
 		if !errors.Is(existingErr, sql.ErrNoRows) {
 			return existingErr
 		}
-		if wallet.Available() < amount {
-			return HostedAILimitReachedError{Available: wallet.Available(), Required: amount}
+		reserveAmount := amount
+		if wallet.Available() < reserveAmount {
+			if allowPartial && wallet.Available() > 0 {
+				reserveAmount = wallet.Available()
+			} else {
+				return HostedAILimitReachedError{Available: wallet.Available(), Required: amount}
+			}
 		}
-		if _, err := tx.ExecContext(context.Background(), `INSERT INTO hosted_ai_reservations(id,user_id,idempotency_key,meter,reserved_microusd) VALUES($1,$2,$3,$4,$5)`, reservation.ID, userID, idempotencyKey, meter, amount); err != nil {
+		if _, err := tx.ExecContext(context.Background(), `INSERT INTO hosted_ai_reservations(id,user_id,idempotency_key,meter,reserved_microusd) VALUES($1,$2,$3,$4,$5)`, reservation.ID, userID, idempotencyKey, meter, reserveAmount); err != nil {
 			return err
 		}
+		reservation.ReservedMicrousd, reservation.ReservedCredits = reserveAmount, reserveAmount
 		reservedNow = true
-		_, err := tx.ExecContext(context.Background(), `UPDATE hosted_ai_wallets SET reserved_microusd=reserved_microusd+$2,updated_at=NOW() WHERE user_id=$1`, userID, amount)
+		_, err := tx.ExecContext(context.Background(), `UPDATE hosted_ai_wallets SET reserved_microusd=reserved_microusd+$2,updated_at=NOW() WHERE user_id=$1`, userID, reserveAmount)
 		return err
 	})
 	if err != nil {
 		return nil, &wallet, err
 	}
 	if reservedNow {
-		wallet.ReservedMicrousd += amount
+		wallet.ReservedMicrousd += reservation.ReservedMicrousd
 	}
 	return reservation, &wallet, nil
 }

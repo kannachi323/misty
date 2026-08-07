@@ -238,6 +238,7 @@ type UsageMeter interface {
 	Reserve(userID, idempotencyKey, meter, provider, model string, estimatedInputTokens, maxOutputTokens int64) (*UsageReservation, error)
 	Settle(reservation *UsageReservation, idempotencyKey, meter, provider, model string, usage ModelUsage) (UsageSettlement, error)
 	Release(reservation *UsageReservation) error
+	Refund(reservation *UsageReservation, idempotencyKey, reason string) (UsageSettlement, error)
 }
 
 type HostedAILimitReachedError struct {

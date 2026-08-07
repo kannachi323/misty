@@ -167,11 +167,7 @@ func (s *SpacesService) Messages() http.HandlerFunc {
 			writeSpaceError(w, err)
 			return
 		}
-		triggers, err := s.enqueueSpaceAgentMessageTriggers(r.Context(), userID, spaceID, "", message.ID, "mention", agentIDs, body.Content, body.FileNodeIDs, body.AttachmentIDs, body.LibraryItemIDs)
-		if err != nil {
-			writeSpaceError(w, err)
-			return
-		}
+		triggers := s.enqueueSpaceAgentMessageTriggers(r.Context(), userID, spaceID, "", message.ID, "mention", agentIDs, body.Content, body.FileNodeIDs, body.AttachmentIDs, body.LibraryItemIDs)
 		if len(agentIDs) == 0 {
 			_ = s.database.QueueSpaceActionSuggestionAnalysis(r.Context(), userID, spaceID, "", message.ID)
 		}

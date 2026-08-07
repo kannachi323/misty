@@ -244,7 +244,10 @@ func (meter *CreditMeter) Reserve(userID, idempotencyKey, usageMeter, provider, 
 	}
 	estimate := agent.ModelUsage{InputTokens: estimatedInputTokens, OutputTokens: maxOutputTokens, Estimated: true}
 	credits := TestingCreditsForUsage(model, estimate)
-	reservation, wallet, err := meter.database.ReserveCredits(userID, tier, usageMeter, idempotencyKey, credits, meter.now())
+	// A completion's estimate assumes the maximum possible output. If less than
+	// that remains, reserve the whole remainder and settle against actual usage
+	// instead of claiming the weekly allowance is already exhausted.
+	reservation, wallet, err := meter.database.ReserveHostedAIUsageUpTo(userID, tier, usageMeter, idempotencyKey, credits, meter.now())
 	if err != nil {
 		var insufficient db.HostedAILimitReachedError
 		if errors.As(err, &insufficient) {
@@ -289,4 +292,22 @@ func (meter *CreditMeter) Release(reservation *agent.UsageReservation) error {
 		return nil
 	}
 	return meter.database.ReleaseCreditReservation(reservation.ID)
+}
+
+// Refund returns a settled model call to the member's weekly allowance when
+// Misty itself rejected the model's response. The provider cost remains in the
+// audit ledger, but a capability-envelope mismatch is our failure rather than
+// useful Agent work and must not consume the member's quota.
+func (meter *CreditMeter) Refund(reservation *agent.UsageReservation, idempotencyKey, reason string) (agent.UsageSettlement, error) {
+	if reservation == nil {
+		return agent.UsageSettlement{}, nil
+	}
+	wallet, err := meter.database.RefundHostedAIReservation(reservation.ID, idempotencyKey, reason)
+	if err != nil {
+		return agent.UsageSettlement{}, err
+	}
+	return agent.UsageSettlement{
+		UsedRatio: wallet.UsedRatio(), ResetAt: wallet.ResetAt,
+		CreditsRemaining: wallet.Available(),
+	}, nil
 }

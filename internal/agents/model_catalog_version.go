@@ -16,8 +16,8 @@ import (
 
 const (
 	GatewayModelCatalogVersion = "gateway-live-v2"
-	InitialSelectedModelID     = "google/gemini-2.5-flash-lite"
-	InitialSelectedModelName   = "Gemini 2.5 Flash-Lite"
+	InitialSelectedModelID     = "poolside/laguna-s-2.1-free"
+	InitialSelectedModelName   = "Laguna S 2.1 Free"
 )
 
 var ErrModelUnavailable = errors.New("agent model unavailable")
