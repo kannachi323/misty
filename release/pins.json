@@ -1,0 +1,21 @@
+{
+  "sdk": "ad375b78cc6619f4667f5ba19e273547958b08fb",
+  "sdkVersion": "0.1.0",
+  "apps": "e6a173d3757dd99754ccf5129fec38054f0a61cc",
+  "appsBranch": "codex/macos-beta-release",
+  "server": "173fc6666350eaba3b530e5cbd72030558847729",
+  "minimumHostVersion": "0.1.0-beta.1",
+  "previousRelease": null,
+  "appVersions": {
+    "chat": "1.1.0-beta.1",
+    "journal": "1.1.0-beta.1",
+    "planner": "1.1.0-beta.1",
+    "library": "1.1.0-beta.1",
+    "inbox": "1.1.0-beta.1",
+    "agents": "1.1.0-beta.1",
+    "files": "1.1.0-beta.1",
+    "browser": "1.1.0-beta.1",
+    "code": "1.1.0-beta.1",
+    "terminal": "1.1.0-beta.1"
+  }
+}
