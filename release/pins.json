@@ -3,7 +3,7 @@
   "sdkVersion": "0.1.0",
   "apps": "e6a173d3757dd99754ccf5129fec38054f0a61cc",
   "appsBranch": "codex/macos-beta-release",
-  "server": "87d51d3e01e338213089a55e0f78bbde6f926b00",
+  "server": "a33d7b72970770aacb8d41e48118a0c37c264d8e",
   "minimumHostVersion": "0.1.0-beta.1",
   "previousRelease": null,
   "appVersions": {
